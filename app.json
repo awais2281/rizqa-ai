@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "Rizqa AI",
+    "slug": "rizqa-ai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#ffffff",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rizqaai.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.rizqaai.app"
+    },
+    "updates": {
+      "enabled": false,
+      "checkAutomatically": "NEVER",
+      "fallbackToCacheTimeout": 0,
+      "url": ""
+    },
+    "extra": {
+      "eas": {
+        "projectId": "53d31506-75c3-445e-8e29-f3418fe86922"
+      }
+    }
+  }
+}
