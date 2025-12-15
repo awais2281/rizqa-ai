@@ -38,15 +38,25 @@ def convert_hf_to_pt(model_dir: str, output_path: str):
         
         # Check if it's already a model object or a state dict
         if isinstance(state_dict, dict):
-            # It's a state dict - we need to reconstruct the model
-            # For Whisper models, we'll save the state dict directly
-            # The openai-whisper library can load state dicts
-            logger.info("Saving state dict as .pt file...")
-            torch.save(state_dict, output_path)
+            # It's a state dict - save it directly as a single .pt file
+            # Use _use_new_zipfile_serialization=False to ensure it's saved as a single file
+            logger.info("Saving state dict as single .pt file...")
+            logger.info("Using legacy format to ensure single file (not ZIP)...")
+            torch.save(state_dict, output_path, _use_new_zipfile_serialization=False)
         else:
             # It's already a model object
-            logger.info("Saving model object as .pt file...")
-            torch.save(state_dict, output_path)
+            logger.info("Saving model object as single .pt file...")
+            torch.save(state_dict, output_path, _use_new_zipfile_serialization=False)
+        
+        # Verify the saved file is NOT a ZIP
+        import zipfile
+        if zipfile.is_zipfile(output_path):
+            logger.error("ERROR: Saved file is still a ZIP! Trying alternative method...")
+            # Try saving with pickle protocol
+            import pickle
+            with open(output_path, 'wb') as f:
+                pickle.dump(state_dict, f, protocol=4)
+            logger.info("Saved using pickle protocol instead")
         
         file_size = os.path.getsize(output_path) / (1024 * 1024)
         logger.info(f"✓ Model converted successfully!")
