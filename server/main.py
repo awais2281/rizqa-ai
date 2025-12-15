@@ -14,6 +14,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 import uvicorn
+import urllib.request
+import shutil
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -52,10 +54,31 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
             model_path = path
             break
     
+    # If model not found locally, try downloading from URL
     if not model_path:
-        raise FileNotFoundError(
-            f"Model file '{model_file}' not found. Searched in: {', '.join(possible_paths)}"
-        )
+        download_url = os.getenv("MODEL_DOWNLOAD_URL")
+        if download_url:
+            logger.info(f"Model not found locally. Attempting to download from: {download_url}")
+            # Create models directory if it doesn't exist
+            os.makedirs("models", exist_ok=True)
+            model_path = f"models/{model_file}"
+            
+            try:
+                logger.info(f"Downloading model to {model_path}...")
+                urllib.request.urlretrieve(download_url, model_path)
+                logger.info(f"✓ Model downloaded successfully to {model_path}")
+            except Exception as e:
+                logger.error(f"Failed to download model: {e}")
+                raise FileNotFoundError(
+                    f"Model file '{model_file}' not found locally and download failed. "
+                    f"Searched in: {', '.join(possible_paths)}. "
+                    f"Download URL: {download_url}"
+                )
+        else:
+            raise FileNotFoundError(
+                f"Model file '{model_file}' not found. Searched in: {', '.join(possible_paths)}. "
+                f"Set MODEL_DOWNLOAD_URL environment variable to download from URL."
+            )
     
     logger.info(f"Loading Whisper model from: {model_path}")
     
