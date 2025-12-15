@@ -225,11 +225,17 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                         logger.info(f"Files in archive: {all_files}")
                         
                         # Look for .pt file in the archive (case-insensitive)
-                        pt_files = [f for f in all_files if f.lower().endswith('.pt')]
+                        # Also check root level files (not in subdirectories)
+                        pt_files = [f for f in all_files if f.lower().endswith('.pt') and '/' not in f and '\\' not in f]
+                        
+                        # If no root-level .pt file, check all .pt files
+                        if not pt_files:
+                            pt_files = [f for f in all_files if f.lower().endswith('.pt')]
                         
                         if pt_files:
-                            # Extract the first .pt file found
+                            # Extract the first .pt file found (prefer root level)
                             extracted_file = pt_files[0]
+                            logger.info(f"Found .pt file in archive: {extracted_file}")
                             zip_ref.extract(extracted_file, os.path.dirname(model_path))
                             extracted_model_path = os.path.join(os.path.dirname(model_path), extracted_file)
                             logger.info(f"✓ Extracted {extracted_file} from ZIP archive")
