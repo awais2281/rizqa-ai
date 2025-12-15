@@ -227,9 +227,36 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                             # Remove the zip file to save space
                             os.remove(model_path)
                         else:
-                            # Maybe the file is named differently - list what's actually there
-                            logger.error(f"ZIP archive does not contain a .pt file. Files found: {all_files}")
-                            raise ValueError(f"ZIP archive does not contain a .pt model file. Found files: {all_files}")
+                            # Check if it's a PyTorch model directory (Hugging Face format)
+                            # Look for pytorch_model directory or data.pkl
+                            model_dirs = [f for f in all_files if 'pytorch_model' in f or 'model.safetensors' in f or 'data.pkl' in f]
+                            if model_dirs:
+                                logger.info("Detected PyTorch model directory format (Hugging Face style)")
+                                logger.info("Extracting entire model directory...")
+                                # Extract all files
+                                zip_ref.extractall(os.path.dirname(model_path))
+                                # Find the pytorch_model directory
+                                extracted_dir = None
+                                for root, dirs, files in os.walk(os.path.dirname(model_path)):
+                                    if 'pytorch_model' in root or 'data.pkl' in files:
+                                        extracted_dir = root
+                                        break
+                                
+                                if extracted_dir:
+                                    logger.info(f"✓ Extracted model directory to: {extracted_dir}")
+                                    # For Hugging Face format, we'll need to load it differently
+                                    # Try to create a single .pt file or use the directory
+                                    # For now, set path to the directory and we'll handle loading
+                                    extracted_model_path = extracted_dir
+                                    logger.warning("Model is in directory format. Will attempt to load as directory.")
+                                else:
+                                    raise ValueError("Could not find pytorch_model directory after extraction")
+                                # Remove the zip file to save space
+                                os.remove(model_path)
+                            else:
+                                # Maybe the file is named differently - list what's actually there
+                                logger.error(f"ZIP archive does not contain a .pt file or model directory. Files found: {all_files[:10]}...")
+                                raise ValueError(f"ZIP archive does not contain a .pt model file or recognized model directory format. Found {len(all_files)} files.")
                 elif not is_zip:
                     # File is not a ZIP, assume it's the .pt file itself
                     logger.info("File appears to be a .pt model file (not an archive)")
