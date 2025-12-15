@@ -185,20 +185,41 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                 
                 # Check if downloaded file is a compressed archive and extract it
                 extracted_model_path = model_path
-                if zipfile.is_zipfile(model_path):
+                
+                # First, check if the file is actually a .pt file (not an archive)
+                # by checking the file signature/magic bytes
+                with open(model_path, 'rb') as f:
+                    first_bytes = f.read(4)
+                    # PyTorch .pt files typically start with specific bytes
+                    # ZIP files start with PK (0x50 0x4B)
+                    is_zip = first_bytes[:2] == b'PK'
+                    
+                if is_zip and zipfile.is_zipfile(model_path):
                     logger.info("Detected ZIP archive. Extracting...")
                     with zipfile.ZipFile(model_path, 'r') as zip_ref:
-                        # Look for .pt file in the archive
-                        pt_files = [f for f in zip_ref.namelist() if f.endswith('.pt')]
+                        # List all files in archive for debugging
+                        all_files = zip_ref.namelist()
+                        logger.info(f"Files in archive: {all_files}")
+                        
+                        # Look for .pt file in the archive (case-insensitive)
+                        pt_files = [f for f in all_files if f.lower().endswith('.pt')]
+                        
                         if pt_files:
                             # Extract the first .pt file found
-                            zip_ref.extract(pt_files[0], os.path.dirname(model_path))
-                            extracted_model_path = os.path.join(os.path.dirname(model_path), pt_files[0])
-                            logger.info(f"✓ Extracted {pt_files[0]} from ZIP archive")
+                            extracted_file = pt_files[0]
+                            zip_ref.extract(extracted_file, os.path.dirname(model_path))
+                            extracted_model_path = os.path.join(os.path.dirname(model_path), extracted_file)
+                            logger.info(f"✓ Extracted {extracted_file} from ZIP archive")
                             # Remove the zip file to save space
                             os.remove(model_path)
                         else:
-                            raise ValueError("ZIP archive does not contain a .pt model file")
+                            # Maybe the file is named differently - list what's actually there
+                            logger.error(f"ZIP archive does not contain a .pt file. Files found: {all_files}")
+                            raise ValueError(f"ZIP archive does not contain a .pt model file. Found files: {all_files}")
+                elif not is_zip:
+                    # File is not a ZIP, assume it's the .pt file itself
+                    logger.info("File appears to be a .pt model file (not an archive)")
+                    extracted_model_path = model_path
                 elif model_path.endswith('.tar.gz') or model_path.endswith('.tgz'):
                     logger.info("Detected TAR.GZ archive. Extracting...")
                     with tarfile.open(model_path, 'r:gz') as tar_ref:
