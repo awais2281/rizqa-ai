@@ -11,7 +11,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
-import { whisperService } from '../lib/whisper';
+import * as FileSystem from 'expo-file-system/legacy';
+import { whisperServerService } from '../lib/whisper-server';
 
 const quranData = require('../../qurandata/quran (1).json');
 
@@ -38,11 +39,14 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
 
   useEffect(() => {
     loadProgress();
+    // Don't preload - model will load on first transcription attempt
+    // This prevents console spam when model isn't bundled
   }, []);
 
   useEffect(() => {
     loadCurrentVerse();
   }, [currentSurah, currentAyah]);
+
 
   const loadProgress = async () => {
     try {
@@ -123,114 +127,208 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
 
   const transcribeAudio = async (audioUri: string): Promise<string> => {
     try {
-      // Use Whisper service to transcribe
-      const transcription = await whisperService.transcribe(audioUri, {
+      // Check server health first
+      const health = await whisperServerService.checkHealth();
+      
+      if (!health.healthy) {
+        throw new Error(
+          'Whisper server is not available. Please check:\n' +
+          `1. Server is running at ${whisperServerService.getServerUrl()}\n` +
+          '2. Your device has internet connection\n' +
+          '3. Server URL is correct in app configuration'
+        );
+      }
+
+      if (!health.modelLoaded) {
+        throw new Error(
+          'Whisper model is not loaded on the server. Please check server logs.'
+        );
+      }
+
+      // Use Whisper server to transcribe
+      const transcription = await whisperServerService.transcribe(audioUri, {
         language: 'ar',
         task: 'transcribe',
       });
+      
       return transcription;
     } catch (error) {
-      console.error('Transcription error:', error);
-      throw error;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Transcription failed: ${errorMessage}`);
     }
   };
 
   const startRecording = async () => {
     try {
+      console.log('Requesting microphone permission...');
       const permission = await Audio.requestPermissionsAsync();
+      console.log('Permission result:', permission);
+      
       if (!permission.granted) {
-        Alert.alert('Permission Required', 'Microphone permission is required to record audio');
+        Alert.alert(
+          'Permission Required', 
+          'Microphone permission is required to record audio. Please enable it in your device settings.'
+        );
         return;
       }
 
+      console.log('Setting audio mode...');
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
       });
 
-      // Configure for 16kHz mono WAV
+      console.log('Creating recording...');
+      // Configure for PCM WAV format: 16kHz, mono, 16-bit PCM
+      // Whisper model expects PCM WAV format (uncompressed, linear PCM)
       const { recording } = await Audio.Recording.createAsync(
         {
           android: {
             extension: '.wav',
+            // On Android, .wav extension with DEFAULT format produces PCM WAV
+            // MediaRecorder automatically uses PCM encoding for .wav files
             outputFormat: Audio.AndroidOutputFormat.DEFAULT,
             audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 128000,
+            sampleRate: 16000, // 16kHz sample rate (required by Whisper)
+            numberOfChannels: 1, // Mono channel (required by Whisper)
+            bitRate: 256000, // 16-bit PCM at 16kHz mono = 256 kbps (16 bits * 16000 samples/sec)
           },
           ios: {
             extension: '.wav',
+            // iOS explicitly uses LINEARPCM for PCM WAV format
             outputFormat: Audio.IOSOutputFormat.LINEARPCM,
             audioQuality: Audio.IOSAudioQuality.HIGH,
-            sampleRate: 16000,
-            numberOfChannels: 1,
-            bitRate: 128000,
-            linearPCMBitDepth: 16,
-            linearPCMIsBigEndian: false,
-            linearPCMIsFloat: false,
+            sampleRate: 16000, // 16kHz sample rate (required by Whisper)
+            numberOfChannels: 1, // Mono channel (required by Whisper)
+            bitRate: 256000, // 16-bit PCM at 16kHz mono = 256 kbps
+            linearPCMBitDepth: 16, // 16-bit PCM (required for Whisper)
+            linearPCMIsBigEndian: false, // Little-endian byte order
+            linearPCMIsFloat: false, // Integer PCM, not float
           },
           web: {
-            mimeType: 'audio/wav',
-            bitsPerSecond: 128000,
+            mimeType: 'audio/wav', // WAV format
+            bitsPerSecond: 256000, // 16-bit PCM at 16kHz mono
           },
         }
       );
 
+      console.log('Recording started successfully');
       setRecording(recording);
       setIsRecording(true);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('Failed to start recording:', error);
-      Alert.alert('Error', 'Failed to start recording');
+      console.error('Error details:', JSON.stringify(error, null, 2));
+      Alert.alert(
+        'Recording Error', 
+        `Failed to start recording: ${errorMessage}\n\nPlease check:\n1. Microphone permission is granted\n2. No other app is using the microphone\n3. Try restarting the app`
+      );
     }
   };
 
   const stopRecording = async () => {
-    if (!recording) return;
+    if (!recording) {
+      console.warn('No recording to stop');
+      return;
+    }
 
     try {
+      console.log('Stopping recording...');
       setIsRecording(false);
       setIsProcessing(true);
       
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
       
+      console.log('Recording URI:', uri);
+      
       if (!uri) {
-        throw new Error('No recording URI');
+        throw new Error('No recording URI - recording may have failed');
       }
 
-      // Convert to WAV 16kHz mono if needed
-      // For now, use the recording as-is
+      // Check if file exists
+      const fileInfo = await FileSystem.getInfoAsync(uri);
+      console.log('Recording file info:', fileInfo);
+      
+      if (!fileInfo.exists) {
+        throw new Error('Recording file does not exist');
+      }
+
+      console.log('Starting transcription...');
+      console.log('Audio file URI:', uri);
+      console.log('Expected verse text:', verseText);
       
       // Transcribe with Whisper
       const transcription = await transcribeAudio(uri);
+      console.log('Transcription received from Whisper:', transcription);
+      
+      if (!transcription || transcription.trim().length === 0) {
+        console.warn('Empty transcription - Whisper may not be working');
+        Alert.alert(
+          'Transcription Failed',
+          'Could not transcribe audio. This may be because:\n\n' +
+          '1. Whisper model is not loaded\n' +
+          '2. Audio quality is too poor\n' +
+          '3. Development build is required (not Expo Go)\n\n' +
+          'Please check the console logs for more details.'
+        );
+        setTestResult('fail');
+        setTranscribedText('');
+        return;
+      }
+
       setTranscribedText(transcription);
 
       // Compare with verse text
+      console.log('=== COMPARISON ===');
+      console.log('Expected verse:', verseText);
+      console.log('Model transcription:', transcription);
+      
       const similarity = calculateSimilarity(transcription, verseText);
+      console.log(`Similarity: ${similarity.toFixed(2)}%`);
+      console.log('Threshold: 70%');
+      console.log('==================');
+      
       const passed = similarity >= 70;
 
       setTestResult(passed ? 'pass' : 'fail');
       
       if (passed) {
+        console.log('Test passed! Moving to next verse...');
         // Wait a bit before moving to next verse
         setTimeout(async () => {
           await moveToNextVerse();
           setTestResult(null);
           setTranscribedText('');
         }, 2000);
+      } else {
+        console.log('Test failed - similarity below 70%');
       }
     } catch (error) {
-      // In placeholder mode, transcription errors are expected
       const errorMessage = error instanceof Error ? error.message : String(error);
-      if (errorMessage.includes('Model file not found') || errorMessage.includes('Whisper')) {
-        console.log('Transcription in placeholder mode (expected):', errorMessage);
-        // Still show fail result since transcription didn't work
+      console.error('Error processing recording:', error);
+      console.error('Error stack:', error instanceof Error ? error.stack : 'No stack');
+      
+      if (errorMessage.includes('Model file not found') || 
+          errorMessage.includes('Whisper') || 
+          errorMessage.includes('not available')) {
+        Alert.alert(
+          'Whisper Not Available',
+          'Whisper transcription requires a development build.\n\n' +
+          'To fix this:\n' +
+          '1. Run: eas build --profile development --platform android\n' +
+          '2. Install the APK on your device\n' +
+          '3. Open the app from the installed APK (not Expo Go)\n\n' +
+          'The model file must be bundled in the app.'
+        );
         setTestResult('fail');
         setTranscribedText('');
       } else {
-        console.error('Error processing recording:', error);
-        Alert.alert('Error', 'Failed to process recording');
+        Alert.alert(
+          'Processing Error', 
+          `Failed to process recording: ${errorMessage}\n\nPlease try recording again.`
+        );
         setTestResult('fail');
       }
     } finally {

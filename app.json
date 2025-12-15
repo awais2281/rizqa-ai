@@ -10,7 +10,9 @@
       "resizeMode": "contain"
     },
     "assetBundlePatterns": [
-      "**/*"
+      "**/*",
+      "models/**",
+      "assets/**"
     ],
     "ios": {
       "supportsTablet": true,
@@ -20,7 +22,11 @@
       "adaptiveIcon": {
         "backgroundColor": "#ffffff"
       },
-      "package": "com.rizqaai.app"
+      "package": "com.rizqaai.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "updates": {
       "enabled": false,
@@ -30,8 +36,12 @@
     },
     "extra": {
       "eas": {
-        "projectId": "53d31506-75c3-445e-8e29-f3418fe86922"
+        "projectId": "7eebecfa-d4ee-4b31-ba3f-a2687706c931"
       }
-    }
+    },
+    "plugins": [
+      "expo-audio"
+    ],
+    "owner": "mufctt"
   }
 }

@@ -18,3 +18,12 @@ web-build/
 .env
 .env.local
 
+# Large model files (too big for GitHub)
+*.pt
+*.bin
+models/*.pt
+models/*.bin
+assets/models/*.pt
+assets/models/*.bin
+server/models/*.pt
+server/models/*.bin
