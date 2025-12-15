@@ -16,6 +16,9 @@ from typing import Optional
 import uvicorn
 import urllib.request
 import shutil
+import zipfile
+import tarfile
+import gzip
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -115,7 +118,63 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                 if file_size < 1024 * 1024:  # Less than 1MB
                     raise ValueError(f"Downloaded file is too small ({file_size} bytes). Expected model file to be much larger.")
                 
-                logger.info(f"✓ Model downloaded successfully to {model_path} ({file_size / (1024*1024):.1f} MB)")
+                logger.info(f"✓ File downloaded successfully ({file_size / (1024*1024):.1f} MB)")
+                
+                # Check if downloaded file is a compressed archive and extract it
+                extracted_model_path = model_path
+                if zipfile.is_zipfile(model_path):
+                    logger.info("Detected ZIP archive. Extracting...")
+                    with zipfile.ZipFile(model_path, 'r') as zip_ref:
+                        # Look for .pt file in the archive
+                        pt_files = [f for f in zip_ref.namelist() if f.endswith('.pt')]
+                        if pt_files:
+                            # Extract the first .pt file found
+                            zip_ref.extract(pt_files[0], os.path.dirname(model_path))
+                            extracted_model_path = os.path.join(os.path.dirname(model_path), pt_files[0])
+                            logger.info(f"✓ Extracted {pt_files[0]} from ZIP archive")
+                            # Remove the zip file to save space
+                            os.remove(model_path)
+                        else:
+                            raise ValueError("ZIP archive does not contain a .pt model file")
+                elif model_path.endswith('.tar.gz') or model_path.endswith('.tgz'):
+                    logger.info("Detected TAR.GZ archive. Extracting...")
+                    with tarfile.open(model_path, 'r:gz') as tar_ref:
+                        # Look for .pt file in the archive
+                        pt_files = [f for f in tar_ref.getnames() if f.endswith('.pt')]
+                        if pt_files:
+                            tar_ref.extract(pt_files[0], os.path.dirname(model_path))
+                            extracted_model_path = os.path.join(os.path.dirname(model_path), pt_files[0])
+                            logger.info(f"✓ Extracted {pt_files[0]} from TAR.GZ archive")
+                            os.remove(model_path)
+                        else:
+                            raise ValueError("TAR.GZ archive does not contain a .pt model file")
+                elif model_path.endswith('.tar'):
+                    logger.info("Detected TAR archive. Extracting...")
+                    with tarfile.open(model_path, 'r') as tar_ref:
+                        pt_files = [f for f in tar_ref.getnames() if f.endswith('.pt')]
+                        if pt_files:
+                            tar_ref.extract(pt_files[0], os.path.dirname(model_path))
+                            extracted_model_path = os.path.join(os.path.dirname(model_path), pt_files[0])
+                            logger.info(f"✓ Extracted {pt_files[0]} from TAR archive")
+                            os.remove(model_path)
+                        else:
+                            raise ValueError("TAR archive does not contain a .pt model file")
+                elif model_path.endswith('.gz') and not model_path.endswith('.tar.gz'):
+                    logger.info("Detected GZIP archive. Extracting...")
+                    with gzip.open(model_path, 'rb') as gz_ref:
+                        # Assume the extracted file should be .pt
+                        extracted_model_path = model_path[:-3]  # Remove .gz extension
+                        with open(extracted_model_path, 'wb') as out_file:
+                            out_file.write(gz_ref.read())
+                        logger.info(f"✓ Extracted from GZIP archive")
+                        os.remove(model_path)
+                
+                # Update model_path to point to extracted file if archive was extracted
+                if extracted_model_path != model_path:
+                    model_path = extracted_model_path
+                    logger.info(f"Using extracted model file: {model_path}")
+                
+                logger.info(f"✓ Model file ready at {model_path} ({os.path.getsize(model_path) / (1024*1024):.1f} MB)")
             except Exception as e:
                 logger.error(f"Failed to download model: {e}")
                 raise FileNotFoundError(
