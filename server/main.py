@@ -203,13 +203,22 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                 # First, check if the file is actually a .pt file (not an archive)
                 # by checking the file signature/magic bytes
                 with open(model_path, 'rb') as f:
-                    first_bytes = f.read(4)
-                    # PyTorch .pt files typically start with specific bytes
-                    # ZIP files start with PK (0x50 0x4B)
+                    first_bytes = f.read(10)
+                    # ZIP files start with PK (0x50 0x4B 0x03 0x04)
+                    # PyTorch .pt files can start with various things, but NOT PK
                     is_zip = first_bytes[:2] == b'PK'
                     
+                    # Also check file extension - if it ends with .pt, it should be a .pt file
+                    if model_path.endswith('.pt') and not is_zip:
+                        logger.info("File has .pt extension and is not a ZIP - treating as PyTorch model file")
+                        # Don't try to extract, use it directly
+                        extracted_model_path = model_path
+                    
                 if is_zip and zipfile.is_zipfile(model_path):
-                    logger.info("Detected ZIP archive. Extracting...")
+                    logger.warning("⚠ Downloaded file is a ZIP archive, not a single .pt file!")
+                    logger.warning("⚠ The model conversion may not have worked correctly.")
+                    logger.warning("⚠ Please ensure you saved the model as a single .pt file, not a ZIP.")
+                    logger.info("Attempting to extract ZIP archive...")
                     with zipfile.ZipFile(model_path, 'r') as zip_ref:
                         # List all files in archive for debugging
                         all_files = zip_ref.namelist()
