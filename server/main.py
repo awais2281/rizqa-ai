@@ -15,10 +15,18 @@ from pathlib import Path
 from typing import Optional
 import uvicorn
 import urllib.request
+import urllib.parse
 import shutil
 import zipfile
 import tarfile
 import gzip
+import re
+import http.cookiejar
+try:
+    import gdown
+    GDOWN_AVAILABLE = True
+except ImportError:
+    GDOWN_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -90,8 +98,36 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                         if percent % 10 == 0:  # Log every 10%
                             logger.info(f"Download progress: {percent}%")
                 
-                # Download the file
-                urllib.request.urlretrieve(download_url, model_path, show_progress)
+                # Use gdown for Google Drive downloads (handles large files better)
+                if "drive.google.com" in download_url and GDOWN_AVAILABLE:
+                    logger.info("Using gdown for Google Drive download (better for large files)")
+                    try:
+                        # Extract file ID from URL
+                        file_id = None
+                        if "/file/d/" in download_url:
+                            file_id = download_url.split("/file/d/")[1].split("/")[0]
+                        elif "id=" in download_url:
+                            file_id = download_url.split("id=")[1].split("&")[0]
+                        
+                        if file_id:
+                            # Use gdown to download
+                            gdrive_url = f"https://drive.google.com/uc?id={file_id}"
+                            logger.info(f"Downloading with gdown from file ID: {file_id}")
+                            gdown.download(gdrive_url, model_path, quiet=False)
+                            logger.info("✓ Download completed with gdown")
+                        else:
+                            raise ValueError("Could not extract file ID from Google Drive URL")
+                    except Exception as e:
+                        logger.warning(f"gdown failed: {e}. Falling back to urllib...")
+                        # Fall back to urllib method
+                        req = urllib.request.Request(download_url)
+                        req.add_header('User-Agent', 'Mozilla/5.0')
+                        urllib.request.urlretrieve(download_url, model_path, show_progress)
+                else:
+                    # Use standard urllib for non-Google Drive or if gdown not available
+                    req = urllib.request.Request(download_url)
+                    req.add_header('User-Agent', 'Mozilla/5.0')
+                    urllib.request.urlretrieve(download_url, model_path, show_progress)
                 
                 # Check if we got an HTML page instead of the actual file (Google Drive large file warning)
                 with open(model_path, 'rb') as f:

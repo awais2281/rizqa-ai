@@ -4,6 +4,8 @@ python-multipart==0.0.6
 # Pin NumPy to < 2.0 to avoid compatibility issues with PyTorch
 numpy<2.0
 openai-whisper==20231117
+# gdown for reliable Google Drive downloads
+gdown==4.7.1
 # CPU-only PyTorch (much smaller - installs separately to avoid index-url issues)
 torch==2.1.0+cpu
 torchaudio==2.1.0+cpu
