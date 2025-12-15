@@ -2,14 +2,23 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install system dependencies and clean up in same layer to reduce size
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    git \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Copy requirements and install Python dependencies
+# Copy requirements first (for better caching)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Python dependencies with optimizations
+# Install CPU-only PyTorch first (smaller size)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.1.0+cpu torchaudio==2.1.0+cpu && \
+    pip install --no-cache-dir fastapi==0.104.1 uvicorn[standard]==0.24.0 python-multipart==0.0.6 openai-whisper==20231117 && \
+    pip cache purge && \
+    rm -rf /root/.cache/pip
 
 # Copy application code
 COPY . .

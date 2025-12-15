@@ -1,0 +1,9 @@
+# Optimized requirements for CPU-only deployment (smaller image size)
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+openai-whisper==20231117
+# CPU-only PyTorch (much smaller - ~500MB vs ~2GB)
+torch==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+
