@@ -87,8 +87,35 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                         if percent % 10 == 0:  # Log every 10%
                             logger.info(f"Download progress: {percent}%")
                 
+                # Download the file
                 urllib.request.urlretrieve(download_url, model_path, show_progress)
-                logger.info(f"✓ Model downloaded successfully to {model_path}")
+                
+                # Check if we got an HTML page instead of the actual file (Google Drive large file warning)
+                with open(model_path, 'rb') as f:
+                    first_bytes = f.read(100)
+                    if first_bytes.startswith(b'<') or b'<html' in first_bytes.lower():
+                        logger.warning("Downloaded file appears to be HTML. Google Drive may require confirmation for large files.")
+                        logger.info("Attempting alternative download method...")
+                        
+                        # Try with confirm parameter for large files
+                        if "drive.google.com" in download_url and "confirm=" not in download_url:
+                            # Add confirm parameter to bypass virus scan warning
+                            download_url_with_confirm = download_url + "&confirm=t"
+                            logger.info(f"Retrying with confirm parameter: {download_url_with_confirm}")
+                            urllib.request.urlretrieve(download_url_with_confirm, model_path, show_progress)
+                            
+                            # Check again
+                            with open(model_path, 'rb') as f2:
+                                first_bytes = f2.read(100)
+                                if first_bytes.startswith(b'<') or b'<html' in first_bytes.lower():
+                                    raise ValueError("Failed to download model file - Google Drive returned HTML instead of file. File may be too large or access restricted.")
+                
+                # Verify file size (should be > 1MB for a model file)
+                file_size = os.path.getsize(model_path)
+                if file_size < 1024 * 1024:  # Less than 1MB
+                    raise ValueError(f"Downloaded file is too small ({file_size} bytes). Expected model file to be much larger.")
+                
+                logger.info(f"✓ Model downloaded successfully to {model_path} ({file_size / (1024*1024):.1f} MB)")
             except Exception as e:
                 logger.error(f"Failed to download model: {e}")
                 raise FileNotFoundError(
