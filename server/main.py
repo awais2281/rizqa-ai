@@ -117,11 +117,15 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                         logger.info(f"Converted Google Drive link to direct download: {download_url}")
                 
                 # Download with progress and error handling
+                last_percent = -1
                 def show_progress(block_num, block_size, total_size):
+                    nonlocal last_percent
                     if total_size > 0:
                         percent = min(100, (block_num * block_size * 100) // total_size)
-                        if percent % 10 == 0:  # Log every 10%
-                            logger.info(f"Download progress: {percent}%")
+                        # Log every 5% or at key milestones
+                        if percent != last_percent and (percent % 5 == 0 or percent in [1, 10, 25, 50, 75, 90, 95, 99, 100]):
+                            logger.info(f"Download progress: {percent}% ({block_num * block_size / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB)")
+                            last_percent = percent
                 
                 # Use gdown for Google Drive downloads (handles large files better)
                 if "drive.google.com" in download_url and GDOWN_AVAILABLE:
