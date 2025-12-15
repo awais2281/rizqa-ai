@@ -65,7 +65,29 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
             
             try:
                 logger.info(f"Downloading model to {model_path}...")
-                urllib.request.urlretrieve(download_url, model_path)
+                
+                # Handle Google Drive links - convert to direct download
+                if "drive.google.com" in download_url:
+                    # Extract file ID from Google Drive URL
+                    file_id = None
+                    if "/file/d/" in download_url:
+                        file_id = download_url.split("/file/d/")[1].split("/")[0]
+                    elif "id=" in download_url:
+                        file_id = download_url.split("id=")[1].split("&")[0]
+                    
+                    if file_id:
+                        # Convert to direct download URL
+                        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+                        logger.info(f"Converted Google Drive link to direct download: {download_url}")
+                
+                # Download with progress and error handling
+                def show_progress(block_num, block_size, total_size):
+                    if total_size > 0:
+                        percent = min(100, (block_num * block_size * 100) // total_size)
+                        if percent % 10 == 0:  # Log every 10%
+                            logger.info(f"Download progress: {percent}%")
+                
+                urllib.request.urlretrieve(download_url, model_path, show_progress)
                 logger.info(f"✓ Model downloaded successfully to {model_path}")
             except Exception as e:
                 logger.error(f"Failed to download model: {e}")
