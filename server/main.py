@@ -22,17 +22,20 @@ import tarfile
 import gzip
 import re
 import http.cookiejar
-try:
-    import gdown
-    GDOWN_AVAILABLE = True
-    logger.info("gdown library is available for Google Drive downloads")
-except ImportError:
-    GDOWN_AVAILABLE = False
-    logger.warning("gdown library not available - will use urllib for downloads")
+# gdown is imported above (after logger initialization)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Check for gdown availability (after logger is initialized)
+try:
+    import gdown
+    GDOWN_AVAILABLE = True
+    logger.info("✓ gdown library is available for Google Drive downloads")
+except ImportError:
+    GDOWN_AVAILABLE = False
+    logger.warning("⚠ gdown library not available - will use urllib for downloads")
 
 app = FastAPI(title="Whisper Transcription API", version="1.0.0")
 
