@@ -115,15 +115,27 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                             file_id = download_url.split("id=")[1].split("&")[0]
                         
                         if file_id:
-                            # Use gdown to download
+                            # Use gdown to download - specify output path explicitly
                             gdrive_url = f"https://drive.google.com/uc?id={file_id}"
-                            logger.info(f"Downloading with gdown from file ID: {file_id}")
-                            gdown.download(gdrive_url, model_path, quiet=False)
-                            logger.info("✓ Download completed with gdown")
+                            logger.info(f"Downloading with gdown from file ID: {file_id} to {model_path}")
+                            
+                            # Ensure output directory exists
+                            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                            
+                            # Download with gdown - use output parameter
+                            result = gdown.download(gdrive_url, output=model_path, quiet=False, fuzzy=True)
+                            
+                            # Check if file was actually downloaded
+                            if os.path.exists(model_path) and os.path.getsize(model_path) > 0:
+                                file_size = os.path.getsize(model_path)
+                                logger.info(f"✓ Download completed with gdown ({file_size / (1024*1024):.1f} MB)")
+                            else:
+                                raise FileNotFoundError(f"gdown reported success but file not found at {model_path}")
                         else:
                             raise ValueError("Could not extract file ID from Google Drive URL")
                     except Exception as e:
-                        logger.warning(f"gdown failed: {e}. Falling back to urllib...")
+                        logger.error(f"gdown failed: {e}")
+                        logger.info("Falling back to urllib method...")
                         # Fall back to urllib method
                         req = urllib.request.Request(download_url)
                         req.add_header('User-Agent', 'Mozilla/5.0')
