@@ -25,8 +25,10 @@ import http.cookiejar
 try:
     import gdown
     GDOWN_AVAILABLE = True
+    logger.info("gdown library is available for Google Drive downloads")
 except ImportError:
     GDOWN_AVAILABLE = False
+    logger.warning("gdown library not available - will use urllib for downloads")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
