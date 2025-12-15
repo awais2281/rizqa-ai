@@ -82,6 +82,16 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
             try:
                 logger.info(f"Downloading model to {model_path}...")
                 
+                # Handle Dropbox links - ensure direct download
+                if "dropbox.com" in download_url:
+                    # Dropbox: change ?dl=0 to ?dl=1 for direct download
+                    if "?dl=0" in download_url:
+                        download_url = download_url.replace("?dl=0", "?dl=1")
+                        logger.info(f"Converted Dropbox link to direct download: {download_url}")
+                    elif "?dl=" not in download_url:
+                        download_url = download_url + "?dl=1"
+                        logger.info(f"Added direct download parameter to Dropbox link")
+                
                 # Handle Google Drive links - convert to direct download
                 if "drive.google.com" in download_url:
                     # Extract file ID from Google Drive URL
