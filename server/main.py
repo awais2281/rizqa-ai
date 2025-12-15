@@ -299,7 +299,11 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
                     model_path = extracted_model_path
                     logger.info(f"Using extracted model file: {model_path}")
                 
-                logger.info(f"✓ Model file ready at {model_path} ({os.path.getsize(model_path) / (1024*1024):.1f} MB)")
+                # Check if extracted path is a directory or file
+                if os.path.isdir(model_path):
+                    logger.info(f"✓ Model directory ready at {model_path}")
+                else:
+                    logger.info(f"✓ Model file ready at {model_path} ({os.path.getsize(model_path) / (1024*1024):.1f} MB)")
             except Exception as e:
                 logger.error(f"Failed to download model: {e}")
                 raise FileNotFoundError(
@@ -316,10 +320,27 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
     logger.info(f"Loading Whisper model from: {model_path}")
     
     try:
-        # Load PyTorch model
-        # If it's a custom fine-tuned model, use whisper.load_model with the path
-        # If it's a standard Whisper model name, use that instead
-        if model_file.endswith('.pt'):
+        # Check if model_path is a directory (Hugging Face format)
+        if os.path.isdir(model_path):
+            logger.warning("Model path is a directory (Hugging Face format).")
+            logger.warning("openai-whisper requires a single .pt file, not a directory.")
+            logger.warning("Falling back to standard Whisper model based on filename...")
+            # Fallback to standard model
+            model_name = "tiny"  # Default
+            if "tiny" in model_file.lower():
+                model_name = "tiny"
+            elif "base" in model_file.lower():
+                model_name = "base"
+            elif "small" in model_file.lower():
+                model_name = "small"
+            elif "medium" in model_file.lower():
+                model_name = "medium"
+            elif "large" in model_file.lower():
+                model_name = "large"
+            
+            logger.info(f"Loading standard Whisper model: {model_name} (your custom model format is not compatible)")
+            whisper_model = whisper.load_model(model_name)
+        elif model_file.endswith('.pt') or model_path.endswith('.pt'):
             # Try loading as custom model first
             try:
                 whisper_model = whisper.load_model(model_path)
