@@ -155,7 +155,8 @@ class WhisperServerService {
           'Cannot connect to Whisper server. Please check:\n' +
           `1. Server is running at ${this.config.baseUrl}\n` +
           '2. Your device has internet connection\n' +
-          '3. Server URL is correct in app configuration'
+          '3. Server URL is correct in app configuration\n' +
+          '4. Try restarting the app to reload configuration'
         );
       }
       
