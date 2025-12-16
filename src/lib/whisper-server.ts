@@ -18,7 +18,7 @@ export interface WhisperServerConfig {
 
 class WhisperServerService {
   private config: WhisperServerConfig;
-  private defaultTimeout = 120000; // 120 seconds (2 minutes) for CPU inference
+  private defaultTimeout = 300000; // 300 seconds (5 minutes) for base model CPU inference
 
   constructor(config?: WhisperServerConfig) {
     this.config = {

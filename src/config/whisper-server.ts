@@ -22,7 +22,7 @@ export const WHISPER_SERVER_CONFIG = {
   // Always use Railway production server
   baseUrl: 'https://rizqa-ai-production.up.railway.app',
   
-  timeout: 180000, // 180 seconds (3 minutes) timeout for CPU inference
+  timeout: 300000, // 300 seconds (5 minutes) timeout for base model CPU inference
 };
 
 

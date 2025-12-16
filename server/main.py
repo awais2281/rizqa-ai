@@ -269,9 +269,10 @@ async def transcribe_audio(
         result = pipe(
             preprocessed_path,  # Use preprocessed audio
             generate_kwargs={
-                "max_new_tokens": 200,  # Increased for base model (better accuracy)
+                "max_new_tokens": 150,  # Reduced for faster generation (still sufficient for short audio)
                 "num_beams": 1,  # Greedy decoding for speed
                 "do_sample": False,  # Deterministic
+                "temperature": None,  # Disable temperature for faster generation
             }
         )
         
