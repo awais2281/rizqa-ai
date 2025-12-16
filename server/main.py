@@ -184,23 +184,38 @@ async def transcribe_audio(
         
         logger.info(f"Transcribing audio: {file.filename} ({len(content)} bytes)")
         
-        # Create transcription pipeline
-        from transformers import pipeline
+        # Load audio file
+        import librosa
         
-        pipe = pipeline(
-            "automatic-speech-recognition",
-            model=model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            device=0 if device == "cuda" else -1,
-            return_timestamps=False,
-        )
+        # Load audio (resample to 16kHz for Whisper)
+        audio_array, sampling_rate = librosa.load(tmp_file_path, sr=16000)
         
-        # Transcribe with Arabic language
+        # Process audio with processor
+        inputs = processor(audio_array, sampling_rate=sampling_rate, return_tensors="pt")
+        
+        # Move inputs to device
+        if device == "cpu":
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+        else:
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+        
+        # Generate transcription
         logger.info(f"Running transcription (language: {language})...")
-        result = pipe(tmp_file_path, language=language)
         
-        transcribed_text = result.get("text", "").strip()
+        # Generate with forced decoder tokens for Arabic
+        # Whisper uses language tokens like <|ar|> for Arabic
+        forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
+        
+        with torch.no_grad():
+            generated_ids = model.generate(
+                inputs["input_features"],
+                forced_decoder_ids=forced_decoder_ids,
+                max_new_tokens=448,
+            )
+        
+        # Decode transcription
+        transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        transcribed_text = transcription.strip()
         
         if not transcribed_text:
             logger.warning("Empty transcription result")
