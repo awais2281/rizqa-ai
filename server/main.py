@@ -200,18 +200,26 @@ async def transcribe_audio(
         # Transcribe - for fine-tuned Arabic model, we don't need to force language
         # The model is already trained for Arabic, so it will transcribe in Arabic
         logger.info(f"Running transcription (model is fine-tuned for Arabic)...")
+        logger.info(f"Starting pipeline inference...")
         
         # Use generate_kwargs for optimization only (no language forcing needed)
+        import time
+        start_time = time.time()
+        
         result = pipe(
             tmp_file_path,
             generate_kwargs={
-                "max_new_tokens": 200,  # Sufficient for short audio
+                "max_new_tokens": 150,  # Reduced for faster generation
                 "num_beams": 1,  # Greedy decoding for speed
                 "do_sample": False,  # Deterministic
             }
         )
         
+        elapsed_time = time.time() - start_time
+        logger.info(f"Pipeline inference completed in {elapsed_time:.2f} seconds")
+        
         transcribed_text = result.get("text", "").strip()
+        logger.info(f"Transcription result length: {len(transcribed_text)} characters")
         
         if not transcribed_text:
             logger.warning("Empty transcription result")
