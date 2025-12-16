@@ -37,9 +37,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global model and processor
+# Global model, processor, and pipeline
 model = None
 processor = None
+pipe = None  # Cache the pipeline for faster inference
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model_loaded = False
 
@@ -89,7 +90,35 @@ def download_and_load_model():
         if device == "cpu":
             model = model.to(device)
         
+        # Quantize model for faster CPU inference (2-4x speedup)
+        if device == "cpu":
+            logger.info("Quantizing model to INT8 for faster CPU inference...")
+            try:
+                from transformers import BitsAndBytesConfig
+                # Use dynamic quantization for CPU (faster inference)
+                import torch.quantization
+                model = torch.quantization.quantize_dynamic(
+                    model, {torch.nn.Linear}, dtype=torch.qint8
+                )
+                logger.info("✓ Model quantized to INT8")
+            except Exception as e:
+                logger.warning(f"Quantization failed (continuing with FP32): {e}")
+        
         model.eval()
+        
+        # Create and cache pipeline for faster inference
+        from transformers import pipeline
+        global pipe
+        pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            device=0 if device == "cuda" else -1,
+            return_timestamps=False,
+        )
+        logger.info("✓ Pipeline created and cached")
+        
         model_loaded = True
         
         logger.info("✓ Model loaded successfully into memory")
@@ -208,13 +237,13 @@ async def transcribe_audio(
             else:
                 audio_array = audio_array / max_val * 0.95
         
-        # Remove silence at start and end
-        # Use librosa's silence detection
-        frame_length = 2048
-        hop_length = 512
-        threshold_db = -40  # Silence threshold in dB
+        # Remove silence at start and end (optimized for speed)
+        # Use faster RMS-based detection with larger frames
+        frame_length = 4096  # Larger frames for faster processing
+        hop_length = 2048   # Larger hops for speed
+        threshold_db = -35  # Slightly higher threshold for faster detection
         
-        # Calculate energy
+        # Calculate energy (faster with larger frames)
         energy = librosa.feature.rms(y=audio_array, frame_length=frame_length, hop_length=hop_length)[0]
         energy_db = librosa.power_to_db(energy**2, ref=np.max)
         
@@ -230,7 +259,7 @@ async def transcribe_audio(
             
             # Trim silence
             audio_array = audio_array[start_sample:end_sample]
-            logger.info(f"Trimmed silence: {len(audio_array)} samples remaining (removed {start_sample} from start, {len(audio_array) - end_sample} from end)")
+            logger.info(f"Trimmed silence: {len(audio_array)} samples remaining")
         
         # Ensure minimum length (at least 0.5 seconds)
         min_samples = int(16000 * 0.5)  # 0.5 seconds at 16kHz
@@ -244,18 +273,18 @@ async def transcribe_audio(
         wavfile.write(preprocessed_path, 16000, (audio_array * 32767).astype(np.int16))
         logger.info(f"Preprocessed audio saved: {len(audio_array)} samples at 16kHz")
         
-        # Use pipeline for optimized inference
-        from transformers import pipeline
-        
-        # Create pipeline (reuse model and processor)
-        pipe = pipeline(
-            "automatic-speech-recognition",
-            model=model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            device=0 if device == "cuda" else -1,
-            return_timestamps=False,
-        )
+        # Use cached pipeline (created at startup) for faster inference
+        if pipe is None:
+            logger.warning("Pipeline not cached, creating new one...")
+            from transformers import pipeline
+            pipe = pipeline(
+                "automatic-speech-recognition",
+                model=model,
+                tokenizer=processor.tokenizer,
+                feature_extractor=processor.feature_extractor,
+                device=0 if device == "cuda" else -1,
+                return_timestamps=False,
+            )
         
         # Transcribe - for fine-tuned Arabic model, we don't need to force language
         # The model is already trained for Arabic, so it will transcribe in Arabic
@@ -269,10 +298,11 @@ async def transcribe_audio(
         result = pipe(
             preprocessed_path,  # Use preprocessed audio
             generate_kwargs={
-                "max_new_tokens": 150,  # Reduced for faster generation (still sufficient for short audio)
+                "max_new_tokens": 120,  # Further reduced for faster generation
                 "num_beams": 1,  # Greedy decoding for speed
                 "do_sample": False,  # Deterministic
                 "temperature": None,  # Disable temperature for faster generation
+                "use_cache": True,  # Enable KV cache for faster generation
             }
         )
         
