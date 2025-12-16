@@ -1,12 +1,11 @@
 """
-Whisper Transcription Server
-FastAPI server for transcribing audio using PyTorch Whisper models
+Whisper Transcription Server using Hugging Face Transformers
+FastAPI server for transcribing Arabic audio using fine-tuned Whisper model
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import whisper
 import torch
 import os
 import tempfile
@@ -15,29 +14,14 @@ from pathlib import Path
 from typing import Optional
 import uvicorn
 import urllib.request
-import urllib.parse
-import shutil
 import zipfile
-import tarfile
-import gzip
-import re
-import http.cookiejar
-# gdown is imported above (after logger initialization)
+import gdown
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Check for gdown availability (after logger is initialized)
-try:
-    import gdown
-    GDOWN_AVAILABLE = True
-    logger.info("✓ gdown library is available for Google Drive downloads")
-except ImportError:
-    GDOWN_AVAILABLE = False
-    logger.warning("⚠ gdown library not available - will use urllib for downloads")
-
-app = FastAPI(title="Whisper Transcription API", version="1.0.0")
+app = FastAPI(title="Whisper Arabic Transcription API", version="2.0.0")
 
 # CORS middleware - allow requests from your React Native app
 app.add_middleware(
@@ -48,341 +32,135 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global model variable
-whisper_model = None
-model_path = None
+# Global model and processor variables
+model = None
+processor = None
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
-    """Load the Whisper model"""
-    global whisper_model, model_path
+def download_model(model_url: str, model_path: str) -> str:
+    """
+    Download model from URL (Dropbox, Google Drive, etc.)
+    Returns the path to the downloaded model file
+    """
+    logger.info(f"Downloading model from: {model_url}")
     
-    # Try multiple possible locations
-    possible_paths = [
-        model_file,  # Current directory
-        f"models/{model_file}",  # models/ subdirectory
-        f"../models/{model_file}",  # Parent models/ directory
-        f"assets/models/{model_file}",  # assets/models/ directory
-    ]
+    # Handle Dropbox links
+    if "dropbox.com" in model_url:
+        if "&dl=0" in model_url:
+            model_url = model_url.replace("&dl=0", "&dl=1")
+        elif "?dl=0" in model_url:
+            model_url = model_url.replace("?dl=0", "?dl=1")
+        elif "?dl=" not in model_url and "&dl=" not in model_url:
+            if "?" in model_url:
+                model_url = model_url + "&dl=1"
+            else:
+                model_url = model_url + "?dl=1"
     
-    model_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            model_path = path
-            break
-    
-    # If model not found locally, try downloading from URL
-    if not model_path:
-        download_url = os.getenv("MODEL_DOWNLOAD_URL")
-        if download_url:
-            logger.info(f"Model not found locally. Attempting to download from: {download_url}")
-            # Create models directory if it doesn't exist
-            os.makedirs("models", exist_ok=True)
-            model_path = f"models/{model_file}"
-            
-            try:
-                logger.info(f"Downloading model to {model_path}...")
-                
-                # Handle Dropbox links - ensure direct download
-                if "dropbox.com" in download_url:
-                    # Dropbox: change ?dl=0 or &dl=0 to ?dl=1 or &dl=1 for direct download
-                    if "&dl=0" in download_url:
-                        download_url = download_url.replace("&dl=0", "&dl=1")
-                        logger.info(f"Converted Dropbox link to direct download (changed &dl=0 to &dl=1)")
-                    elif "?dl=0" in download_url:
-                        download_url = download_url.replace("?dl=0", "?dl=1")
-                        logger.info(f"Converted Dropbox link to direct download (changed ?dl=0 to ?dl=1)")
-                    elif "?dl=" not in download_url and "&dl=" not in download_url:
-                        # Only add if not already present
-                        if "?" in download_url:
-                            download_url = download_url + "&dl=1"
-                        else:
-                            download_url = download_url + "?dl=1"
-                        logger.info(f"Added direct download parameter to Dropbox link")
-                    # If dl=1 already exists, don't modify
-                    elif "dl=1" in download_url:
-                        logger.info(f"Dropbox link already has direct download enabled")
-                
-                # Handle Google Drive links - convert to direct download
-                if "drive.google.com" in download_url:
-                    # Extract file ID from Google Drive URL
-                    file_id = None
-                    if "/file/d/" in download_url:
-                        file_id = download_url.split("/file/d/")[1].split("/")[0]
-                    elif "id=" in download_url:
-                        file_id = download_url.split("id=")[1].split("&")[0]
-                    
-                    if file_id:
-                        # Convert to direct download URL
-                        download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                        logger.info(f"Converted Google Drive link to direct download: {download_url}")
-                
-                # Download with progress and error handling
-                last_percent = -1
-                def show_progress(block_num, block_size, total_size):
-                    nonlocal last_percent
-                    if total_size > 0:
-                        percent = min(100, (block_num * block_size * 100) // total_size)
-                        # Log every 5% or at key milestones
-                        if percent != last_percent and (percent % 5 == 0 or percent in [1, 10, 25, 50, 75, 90, 95, 99, 100]):
-                            logger.info(f"Download progress: {percent}% ({block_num * block_size / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB)")
-                            last_percent = percent
-                
-                # Use gdown for Google Drive downloads (handles large files better)
-                if "drive.google.com" in download_url and GDOWN_AVAILABLE:
-                    logger.info("Using gdown for Google Drive download (better for large files)")
-                    try:
-                        # Extract file ID from URL
-                        file_id = None
-                        if "/file/d/" in download_url:
-                            file_id = download_url.split("/file/d/")[1].split("/")[0]
-                        elif "id=" in download_url:
-                            file_id = download_url.split("id=")[1].split("&")[0]
-                        
-                        if file_id:
-                            # Use gdown to download - specify output path explicitly
-                            gdrive_url = f"https://drive.google.com/uc?id={file_id}"
-                            logger.info(f"Downloading with gdown from file ID: {file_id} to {model_path}")
-                            
-                            # Ensure output directory exists
-                            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-                            
-                            # Download with gdown - use output parameter
-                            result = gdown.download(gdrive_url, output=model_path, quiet=False, fuzzy=True)
-                            
-                            # Check if file was actually downloaded
-                            if os.path.exists(model_path) and os.path.getsize(model_path) > 0:
-                                file_size = os.path.getsize(model_path)
-                                logger.info(f"✓ Download completed with gdown ({file_size / (1024*1024):.1f} MB)")
-                            else:
-                                raise FileNotFoundError(f"gdown reported success but file not found at {model_path}")
-                        else:
-                            raise ValueError("Could not extract file ID from Google Drive URL")
-                    except Exception as e:
-                        logger.error(f"gdown failed: {e}")
-                        logger.info("Falling back to urllib method...")
-                        # Fall back to urllib method
-                        req = urllib.request.Request(download_url)
-                        req.add_header('User-Agent', 'Mozilla/5.0')
-                        urllib.request.urlretrieve(download_url, model_path, show_progress)
-                else:
-                    # Use standard urllib for non-Google Drive or if gdown not available
-                    req = urllib.request.Request(download_url)
-                    req.add_header('User-Agent', 'Mozilla/5.0')
-                    urllib.request.urlretrieve(download_url, model_path, show_progress)
-                
-                # Check if we got an HTML page instead of the actual file (Google Drive large file warning)
-                with open(model_path, 'rb') as f:
-                    first_bytes = f.read(100)
-                    if first_bytes.startswith(b'<') or b'<html' in first_bytes.lower():
-                        logger.warning("Downloaded file appears to be HTML. Google Drive may require confirmation for large files.")
-                        logger.info("Attempting alternative download method...")
-                        
-                        # Try with confirm parameter for large files
-                        if "drive.google.com" in download_url and "confirm=" not in download_url:
-                            # Add confirm parameter to bypass virus scan warning
-                            download_url_with_confirm = download_url + "&confirm=t"
-                            logger.info(f"Retrying with confirm parameter: {download_url_with_confirm}")
-                            urllib.request.urlretrieve(download_url_with_confirm, model_path, show_progress)
-                            
-                            # Check again
-                            with open(model_path, 'rb') as f2:
-                                first_bytes = f2.read(100)
-                                if first_bytes.startswith(b'<') or b'<html' in first_bytes.lower():
-                                    raise ValueError("Failed to download model file - Google Drive returned HTML instead of file. File may be too large or access restricted.")
-                
-                # Verify file size (should be > 1MB for a model file)
-                file_size = os.path.getsize(model_path)
-                if file_size < 1024 * 1024:  # Less than 1MB
-                    raise ValueError(f"Downloaded file is too small ({file_size} bytes). Expected model file to be much larger.")
-                
-                logger.info(f"✓ File downloaded successfully ({file_size / (1024*1024):.1f} MB)")
-                
-                # Check if downloaded file is a compressed archive and extract it
-                extracted_model_path = model_path
-                
-                # First, check if the file is actually a .pt file (not an archive)
-                # by checking the file signature/magic bytes
-                with open(model_path, 'rb') as f:
-                    first_bytes = f.read(10)
-                    # ZIP files start with PK (0x50 0x4B 0x03 0x04)
-                    # PyTorch .pt files can start with various things, but NOT PK
-                    is_zip = first_bytes[:2] == b'PK'
-                    
-                    # Also check file extension - if it ends with .pt, it should be a .pt file
-                    if model_path.endswith('.pt') and not is_zip:
-                        logger.info("File has .pt extension and is not a ZIP - treating as PyTorch model file")
-                        # Don't try to extract, use it directly
-                        extracted_model_path = model_path
-                    
-                if is_zip and zipfile.is_zipfile(model_path):
-                    logger.warning("⚠ Downloaded file is a ZIP archive, not a single .pt file!")
-                    logger.warning("⚠ The model conversion may not have worked correctly.")
-                    logger.warning("⚠ Please ensure you saved the model as a single .pt file, not a ZIP.")
-                    logger.info("Attempting to extract ZIP archive...")
-                    with zipfile.ZipFile(model_path, 'r') as zip_ref:
-                        # List all files in archive for debugging
-                        all_files = zip_ref.namelist()
-                        logger.info(f"Files in archive: {all_files}")
-                        
-                        # Look for .pt file in the archive (case-insensitive)
-                        # Also check root level files (not in subdirectories)
-                        pt_files = [f for f in all_files if f.lower().endswith('.pt') and '/' not in f and '\\' not in f]
-                        
-                        # If no root-level .pt file, check all .pt files
-                        if not pt_files:
-                            pt_files = [f for f in all_files if f.lower().endswith('.pt')]
-                        
-                        if pt_files:
-                            # Extract the first .pt file found (prefer root level)
-                            extracted_file = pt_files[0]
-                            logger.info(f"Found .pt file in archive: {extracted_file}")
-                            zip_ref.extract(extracted_file, os.path.dirname(model_path))
-                            extracted_model_path = os.path.join(os.path.dirname(model_path), extracted_file)
-                            logger.info(f"✓ Extracted {extracted_file} from ZIP archive")
-                            # Remove the zip file to save space
-                            os.remove(model_path)
-                        else:
-                            # Check if it's a PyTorch model directory (Hugging Face format)
-                            # Look for pytorch_model directory or data.pkl
-                            model_dirs = [f for f in all_files if 'pytorch_model' in f or 'model.safetensors' in f or 'data.pkl' in f]
-                            if model_dirs:
-                                logger.info("Detected PyTorch model directory format (Hugging Face style)")
-                                logger.info("Extracting entire model directory...")
-                                # Extract all files
-                                zip_ref.extractall(os.path.dirname(model_path))
-                                # Find the pytorch_model directory
-                                extracted_dir = None
-                                for root, dirs, files in os.walk(os.path.dirname(model_path)):
-                                    if 'pytorch_model' in root or 'data.pkl' in files:
-                                        extracted_dir = root
-                                        break
-                                
-                                if extracted_dir:
-                                    logger.info(f"✓ Extracted model directory to: {extracted_dir}")
-                                    # For Hugging Face format, we'll need to load it differently
-                                    # Try to create a single .pt file or use the directory
-                                    # For now, set path to the directory and we'll handle loading
-                                    extracted_model_path = extracted_dir
-                                    logger.warning("Model is in directory format. Will attempt to load as directory.")
-                                else:
-                                    raise ValueError("Could not find pytorch_model directory after extraction")
-                                # Remove the zip file to save space
-                                os.remove(model_path)
-                            else:
-                                # Maybe the file is named differently - list what's actually there
-                                logger.error(f"ZIP archive does not contain a .pt file or model directory. Files found: {all_files[:10]}...")
-                                raise ValueError(f"ZIP archive does not contain a .pt model file or recognized model directory format. Found {len(all_files)} files.")
-                elif not is_zip:
-                    # File is not a ZIP, assume it's the .pt file itself
-                    logger.info("File appears to be a .pt model file (not an archive)")
-                    extracted_model_path = model_path
-                elif model_path.endswith('.tar.gz') or model_path.endswith('.tgz'):
-                    logger.info("Detected TAR.GZ archive. Extracting...")
-                    with tarfile.open(model_path, 'r:gz') as tar_ref:
-                        # Look for .pt file in the archive
-                        pt_files = [f for f in tar_ref.getnames() if f.endswith('.pt')]
-                        if pt_files:
-                            tar_ref.extract(pt_files[0], os.path.dirname(model_path))
-                            extracted_model_path = os.path.join(os.path.dirname(model_path), pt_files[0])
-                            logger.info(f"✓ Extracted {pt_files[0]} from TAR.GZ archive")
-                            os.remove(model_path)
-                        else:
-                            raise ValueError("TAR.GZ archive does not contain a .pt model file")
-                elif model_path.endswith('.tar'):
-                    logger.info("Detected TAR archive. Extracting...")
-                    with tarfile.open(model_path, 'r') as tar_ref:
-                        pt_files = [f for f in tar_ref.getnames() if f.endswith('.pt')]
-                        if pt_files:
-                            tar_ref.extract(pt_files[0], os.path.dirname(model_path))
-                            extracted_model_path = os.path.join(os.path.dirname(model_path), pt_files[0])
-                            logger.info(f"✓ Extracted {pt_files[0]} from TAR archive")
-                            os.remove(model_path)
-                        else:
-                            raise ValueError("TAR archive does not contain a .pt model file")
-                elif model_path.endswith('.gz') and not model_path.endswith('.tar.gz'):
-                    logger.info("Detected GZIP archive. Extracting...")
-                    with gzip.open(model_path, 'rb') as gz_ref:
-                        # Assume the extracted file should be .pt
-                        extracted_model_path = model_path[:-3]  # Remove .gz extension
-                        with open(extracted_model_path, 'wb') as out_file:
-                            out_file.write(gz_ref.read())
-                        logger.info(f"✓ Extracted from GZIP archive")
-                        os.remove(model_path)
-                
-                # Update model_path to point to extracted file if archive was extracted
-                if extracted_model_path != model_path:
-                    model_path = extracted_model_path
-                    logger.info(f"Using extracted model file: {model_path}")
-                
-                # Check if extracted path is a directory or file
-                if os.path.isdir(model_path):
-                    logger.info(f"✓ Model directory ready at {model_path}")
-                else:
-                    logger.info(f"✓ Model file ready at {model_path} ({os.path.getsize(model_path) / (1024*1024):.1f} MB)")
-            except Exception as e:
-                logger.error(f"Failed to download model: {e}")
-                raise FileNotFoundError(
-                    f"Model file '{model_file}' not found locally and download failed. "
-                    f"Searched in: {', '.join(possible_paths)}. "
-                    f"Download URL: {download_url}"
-                )
-        else:
-            raise FileNotFoundError(
-                f"Model file '{model_file}' not found. Searched in: {', '.join(possible_paths)}. "
-                f"Set MODEL_DOWNLOAD_URL environment variable to download from URL."
-            )
-    
-    logger.info(f"Loading Whisper model from: {model_path}")
+    # Download the file
+    def show_progress(block_num, block_size, total_size):
+        if total_size > 0:
+            percent = min(100, (block_num * block_size * 100) // total_size)
+            if percent % 10 == 0:
+                logger.info(f"Download progress: {percent}%")
     
     try:
-        # Check if model_path is a directory (Hugging Face format)
-        if os.path.isdir(model_path):
-            logger.warning("Model path is a directory (Hugging Face format).")
-            logger.warning("openai-whisper requires a single .pt file, not a directory.")
-            logger.warning("Falling back to standard Whisper model based on filename...")
-            # Fallback to standard model
-            model_name = "tiny"  # Default
-            if "tiny" in model_file.lower():
-                model_name = "tiny"
-            elif "base" in model_file.lower():
-                model_name = "base"
-            elif "small" in model_file.lower():
-                model_name = "small"
-            elif "medium" in model_file.lower():
-                model_name = "medium"
-            elif "large" in model_file.lower():
-                model_name = "large"
-            
-            logger.info(f"Loading standard Whisper model: {model_name} (your custom model format is not compatible)")
-            whisper_model = whisper.load_model(model_name)
-        elif model_file.endswith('.pt') or model_path.endswith('.pt'):
-            # Try loading as custom model first
-            try:
-                whisper_model = whisper.load_model(model_path)
-            except Exception as e:
-                logger.warning(f"Failed to load as custom model: {e}")
-                # Fallback: try loading as standard Whisper model name
-                # Extract model name from filename (e.g., "tiny" from "whisper_tiny_ar_quran.pt")
-                model_name = "tiny"  # Default fallback
-                if "tiny" in model_file.lower():
-                    model_name = "tiny"
-                elif "base" in model_file.lower():
-                    model_name = "base"
-                elif "small" in model_file.lower():
-                    model_name = "small"
-                elif "medium" in model_file.lower():
-                    model_name = "medium"
-                elif "large" in model_file.lower():
-                    model_name = "large"
-                
-                logger.info(f"Loading standard Whisper model: {model_name}")
-                whisper_model = whisper.load_model(model_name)
-        else:
-            # Standard Whisper model name
-            whisper_model = whisper.load_model(model_file)
+        req = urllib.request.Request(model_url)
+        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        urllib.request.urlretrieve(model_url, model_path, show_progress)
         
-        logger.info("✓ Whisper model loaded successfully")
-        return whisper_model
+        file_size = os.path.getsize(model_path) / (1024 * 1024)
+        logger.info(f"✓ Model downloaded successfully ({file_size:.1f} MB)")
+        
+        # Check if it's a ZIP file and extract if needed
+        if zipfile.is_zipfile(model_path):
+            logger.info("Detected ZIP archive. Extracting...")
+            extract_dir = os.path.splitext(model_path)[0]
+            os.makedirs(extract_dir, exist_ok=True)
+            
+            with zipfile.ZipFile(model_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+            
+            # Look for .pt file or model directory
+            for root, dirs, files in os.walk(extract_dir):
+                if any(f.endswith('.pt') for f in files):
+                    model_path = os.path.join(root, [f for f in files if f.endswith('.pt')][0])
+                    logger.info(f"Found .pt file: {model_path}")
+                    break
+                elif 'pytorch_model.bin' in files or 'model.safetensors' in files:
+                    model_path = root
+                    logger.info(f"Found model directory: {model_path}")
+                    break
+            
+            # Remove ZIP file
+            os.remove(model_path + '.zip' if model_path.endswith('.pt') else model_path)
+        
+        return model_path
+        
+    except Exception as e:
+        logger.error(f"Failed to download model: {e}")
+        raise
+
+def load_model(model_path: str):
+    """
+    Load Whisper model using Hugging Face transformers
+    """
+    global model, processor
+    
+    try:
+        from transformers import WhisperProcessor, WhisperForConditionalGeneration
+        
+        logger.info(f"Loading model from: {model_path}")
+        logger.info(f"Using device: {device}")
+        
+        # Check if model_path is a directory (Hugging Face format) or a single file
+        if os.path.isdir(model_path):
+            # Load from Hugging Face directory format
+            logger.info("Loading from Hugging Face directory format...")
+            model = WhisperForConditionalGeneration.from_pretrained(
+                model_path,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                device_map="auto" if device == "cuda" else None,
+            )
+            processor = WhisperProcessor.from_pretrained(model_path)
+        elif model_path.endswith('.pt'):
+            # Load from single .pt file
+            logger.info("Loading from single .pt file...")
+            # For single .pt files, we need to know the base model
+            # Try to infer from filename or use tiny as default
+            base_model = "openai/whisper-tiny"
+            if "tiny" in model_path.lower():
+                base_model = "openai/whisper-tiny"
+            elif "base" in model_path.lower():
+                base_model = "openai/whisper-base"
+            elif "small" in model_path.lower():
+                base_model = "openai/whisper-small"
+            
+            logger.info(f"Using base model: {base_model}")
+            
+            # Load base model first
+            model = WhisperForConditionalGeneration.from_pretrained(
+                base_model,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                device_map="auto" if device == "cuda" else None,
+            )
+            
+            # Load fine-tuned weights
+            state_dict = torch.load(model_path, map_location=device)
+            model.load_state_dict(state_dict)
+            
+            processor = WhisperProcessor.from_pretrained(base_model)
+        else:
+            raise ValueError(f"Unknown model format: {model_path}")
+        
+        if device == "cpu":
+            model = model.to(device)
+        
+        model.eval()
+        logger.info("✓ Model loaded successfully")
+        
+    except ImportError:
+        logger.error("transformers library not installed. Install with: pip install transformers")
+        raise
     except Exception as e:
         logger.error(f"Error loading model: {e}")
         raise
@@ -390,9 +168,27 @@ def load_model(model_file: str = "whisper_tiny_ar_quran.pt"):
 @app.on_event("startup")
 async def startup_event():
     """Load model on server startup"""
-    model_file = os.getenv("WHISPER_MODEL", "whisper_tiny_ar_quran.pt")
+    model_url = os.getenv("MODEL_DOWNLOAD_URL")
+    model_file = os.getenv("WHISPER_MODEL", "whisper_ar_tiny_quran_single.pt")
+    
+    if not model_url:
+        logger.warning("MODEL_DOWNLOAD_URL not set. Model will not be loaded.")
+        return
+    
     try:
-        load_model(model_file)
+        # Create models directory
+        os.makedirs("models", exist_ok=True)
+        model_path = f"models/{model_file}"
+        
+        # Download model if not exists
+        if not os.path.exists(model_path):
+            download_model(model_url, model_path)
+        else:
+            logger.info(f"Model already exists at: {model_path}")
+        
+        # Load the model
+        load_model(model_path)
+        
     except Exception as e:
         logger.error(f"Failed to load model on startup: {e}")
         logger.warning("Server will start but transcription will fail until model is loaded")
@@ -402,8 +198,8 @@ async def root():
     """Health check endpoint"""
     return {
         "status": "online",
-        "model_loaded": whisper_model is not None,
-        "model_path": model_path
+        "model_loaded": model is not None,
+        "device": device
     }
 
 @app.get("/health")
@@ -411,29 +207,27 @@ async def health():
     """Health check with model status"""
     return {
         "status": "healthy",
-        "model_loaded": whisper_model is not None,
-        "model_path": model_path,
-        "device": "cuda" if torch.cuda.is_available() else "cpu"
+        "model_loaded": model is not None,
+        "processor_loaded": processor is not None,
+        "device": device
     }
 
 @app.post("/transcribe")
 async def transcribe_audio(
     file: UploadFile = File(...),
-    language: Optional[str] = "ar",
-    task: Optional[str] = "transcribe"
+    language: Optional[str] = "ar"
 ):
     """
-    Transcribe audio file
+    Transcribe audio file to Arabic text
     
     Args:
-        file: Audio file (WAV, MP3, M4A, etc.)
+        file: Audio file (WAV, MP3, M4A, etc.) - should be <10 seconds
         language: Language code (default: "ar" for Arabic)
-        task: "transcribe" or "translate" (default: "transcribe")
     
     Returns:
         JSON with transcribed text
     """
-    if whisper_model is None:
+    if model is None or processor is None:
         raise HTTPException(
             status_code=503,
             detail="Whisper model not loaded. Please check server logs."
@@ -457,16 +251,23 @@ async def transcribe_audio(
             tmp_file_path = tmp_file.name
             
             logger.info(f"Transcribing audio file: {file.filename} ({len(content)} bytes)")
-            logger.info(f"Language: {language}, Task: {task}")
+            logger.info(f"Language: {language}")
             
-            # Transcribe using Whisper
-            result = whisper_model.transcribe(
-                tmp_file_path,
-                language=language if language != "auto" else None,
-                task=task
+            # Load and process audio
+            from transformers import pipeline
+            
+            # Create transcription pipeline
+            pipe = pipeline(
+                "automatic-speech-recognition",
+                model=model,
+                tokenizer=processor.tokenizer,
+                feature_extractor=processor.feature_extractor,
+                device=0 if device == "cuda" else -1,
             )
             
-            # Extract text from result
+            # Transcribe
+            result = pipe(tmp_file_path, return_timestamps=False, language=language)
+            
             transcribed_text = result.get("text", "").strip()
             
             logger.info(f"Transcription successful: {transcribed_text[:50]}...")
@@ -474,8 +275,7 @@ async def transcribe_audio(
             return JSONResponse({
                 "success": True,
                 "text": transcribed_text,
-                "language": result.get("language", language),
-                "segments": result.get("segments", [])
+                "language": language
             })
             
         except Exception as e:
@@ -492,13 +292,20 @@ async def transcribe_audio(
                 pass
 
 @app.post("/reload-model")
-async def reload_model(model_file: Optional[str] = None):
-    """Reload the Whisper model (useful for updating models without restarting server)"""
-    global whisper_model, model_path
+async def reload_model():
+    """Reload the Whisper model"""
+    global model, processor
+    
+    model_url = os.getenv("MODEL_DOWNLOAD_URL")
+    model_file = os.getenv("WHISPER_MODEL", "whisper_ar_tiny_quran_single.pt")
+    
+    if not model_url:
+        raise HTTPException(status_code=400, detail="MODEL_DOWNLOAD_URL not set")
     
     try:
-        model_to_load = model_file or os.getenv("WHISPER_MODEL", "whisper_tiny_ar_quran.pt")
-        load_model(model_to_load)
+        model_path = f"models/{model_file}"
+        download_model(model_url, model_path)
+        load_model(model_path)
         return {
             "success": True,
             "message": f"Model reloaded successfully: {model_path}"
@@ -510,10 +317,8 @@ async def reload_model(model_file: Optional[str] = None):
         )
 
 if __name__ == "__main__":
-    # Get configuration from environment variables
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 8000))
     
     logger.info(f"Starting Whisper server on {host}:{port}")
     uvicorn.run(app, host=host, port=port)
-
