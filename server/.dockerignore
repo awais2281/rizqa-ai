@@ -10,10 +10,11 @@ ENV/
 *.pt
 *.bin
 *.pth
-models/
+models_cache/
 *.wav
 *.mp3
 *.m4a
 .env
-
+.git/
+.gitignore
 

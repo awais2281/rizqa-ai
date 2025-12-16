@@ -2,23 +2,22 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies and clean up in same layer to reduce size
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy requirements first (for better caching)
+# Copy requirements first (for better Docker layer caching)
 COPY requirements.txt .
 
-# Install Python dependencies with optimizations
-# CRITICAL: Install NumPy < 2.0 FIRST before anything else to prevent conflicts
+# Install Python dependencies
+# Install NumPy first to avoid conflicts, then PyTorch CPU, then rest
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir "numpy<2.0" && \
-    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.1.0+cpu torchaudio==2.1.0+cpu && \
-    pip install --no-cache-dir fastapi==0.104.1 uvicorn[standard]==0.24.0 python-multipart==0.0.6 gdown==4.7.1 && \
-    pip install --no-cache-dir transformers>=4.35.0 librosa>=0.10.0 soundfile>=0.12.0 && \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchaudio && \
+    pip install --no-cache-dir -r requirements.txt && \
     pip cache purge && \
     rm -rf /root/.cache/pip
 
@@ -29,5 +28,5 @@ COPY . .
 EXPOSE 8000
 
 # Run the server
+# Model will be downloaded at startup from Hugging Face
 CMD ["python", "main.py"]
-

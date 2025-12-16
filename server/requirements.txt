@@ -1,14 +1,21 @@
+# FastAPI web framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
-# Hugging Face transformers for Whisper
+
+# Hugging Face Transformers for Whisper
 transformers>=4.35.0
-torch>=2.0.0
-torchaudio>=2.0.0
+
+# PyTorch (CPU-only for smaller image size)
+torch>=2.1.0
+torchaudio>=2.1.0
+
 # Audio processing
 librosa>=0.10.0
 soundfile>=0.12.0
-# For downloads
-gdown==4.7.1
-# Pin NumPy to < 2.0 to avoid compatibility issues
+
+# NumPy (pin to <2.0 for compatibility)
 numpy<2.0
+
+# Utilities
+requests>=2.31.0

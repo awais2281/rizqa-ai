@@ -125,16 +125,17 @@ class WhisperServerService {
           throw new Error(errorMessage);
         }
 
-        const result = await response.json();
-        
-        if (!result.success) {
-          throw new Error(result.error || 'Transcription failed');
-        }
+      const result = await response.json();
+      
+      if (!result.success) {
+        throw new Error(result.error || 'Transcription failed');
+      }
 
-        const transcribedText = result.text || '';
-        console.log('Transcription result:', transcribedText);
+      // Handle both old and new API response formats
+      const transcribedText = result.text || '';
+      console.log('Transcription result:', transcribedText);
 
-        return transcribedText.trim();
+      return transcribedText.trim();
       } catch (fetchError: any) {
         clearTimeout(timeoutId);
         

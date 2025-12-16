@@ -1,174 +1,99 @@
-# Whisper Transcription Server
+# Whisper Arabic Transcription Server
 
-FastAPI server for transcribing audio using PyTorch Whisper models.
+Production inference server for fine-tuned Whisper model (`tarteel-ai/whisper-tiny-ar-quran`).
 
-## Setup Instructions
+## Architecture
 
-### 1. Install Python Dependencies
+- **Model Source**: Hugging Face (`tarteel-ai/whisper-tiny-ar-quran`)
+- **Model Download**: Automatic at server startup (cached on disk)
+- **Inference**: Server-side only (model never sent to client)
+- **Deployment**: Railway (model downloaded at runtime, not in Docker image)
 
-```bash
-cd server
-pip install -r requirements.txt
-```
+## Features
 
-### 2. Place Your Model File
-
-Place your `whisper_tiny_ar_quran.pt` model file in one of these locations:
-- `server/models/whisper_tiny_ar_quran.pt` (recommended)
-- `server/whisper_tiny_ar_quran.pt`
-- `models/whisper_tiny_ar_quran.pt` (parent directory)
-
-### 3. Run the Server
-
-**Local Development:**
-```bash
-cd server
-python main.py
-```
-
-Or with uvicorn directly:
-```bash
-cd server
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-The server will start on `http://localhost:8000`
-
-### 4. Test the Server
-
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# Test transcription (replace with your audio file)
-curl -X POST "http://localhost:8000/transcribe?language=ar" \
-  -F "file=@test_audio.wav"
-```
-
-## Environment Variables
-
-Create a `.env` file (optional):
-
-```env
-WHISPER_MODEL=whisper_tiny_ar_quran.pt
-HOST=0.0.0.0
-PORT=8000
-```
+- ✅ Downloads model from Hugging Face at startup
+- ✅ Caches model on disk for faster restarts
+- ✅ Loads model into memory for fast inference
+- ✅ Accepts audio files ≤10 seconds
+- ✅ Returns Arabic transcription
+- ✅ Production-ready error handling
+- ✅ Health check endpoints
 
 ## API Endpoints
 
 ### `GET /health`
 Check server and model status
 
-### `POST /transcribe`
-Transcribe audio file
+**Response:**
+```json
+{
+  "status": "healthy",
+  "model_loaded": true,
+  "device": "cpu",
+  "model_id": "tarteel-ai/whisper-tiny-ar-quran"
+}
+```
 
-**Parameters:**
+### `POST /transcribe`
+Transcribe audio file to Arabic text
+
+**Request:**
 - `file`: Audio file (multipart/form-data)
-- `language`: Language code (default: "ar")
-- `task`: "transcribe" or "translate" (default: "transcribe")
+- `language`: Language code (optional, default: "ar")
 
 **Response:**
 ```json
 {
   "success": true,
-  "text": "transcribed text here",
+  "text": "transcribed Arabic text here",
   "language": "ar",
-  "segments": [...]
+  "model": "tarteel-ai/whisper-tiny-ar-quran"
 }
 ```
 
-## Deployment Options
+## Local Development
 
-### Option 1: Railway (Recommended - Easy & Free Tier)
+```bash
+cd server
+pip install -r requirements.txt
+python main.py
+```
 
-1. Go to https://railway.app
-2. Sign up/login with GitHub
-3. Click "New Project" → "Deploy from GitHub repo"
-4. Select your repository
-5. Railway will auto-detect Python
-6. Set environment variables:
-   - `WHISPER_MODEL=whisper_tiny_ar_quran.pt`
-7. Upload your model file to the `server/models/` directory in your repo
-8. Deploy!
+Server will start on `http://localhost:8000`
 
-**Railway will give you a URL like:** `https://your-app.railway.app`
+Model will be downloaded from Hugging Face on first run (cached in `./models_cache/`)
 
-### Option 2: Render
+## Railway Deployment
 
-1. Go to https://render.com
-2. Sign up/login
-3. Click "New" → "Web Service"
-4. Connect your GitHub repository
-5. Settings:
-   - **Build Command:** `cd server && pip install -r requirements.txt`
-   - **Start Command:** `cd server && python main.py`
-   - **Environment:** Python 3
-6. Add environment variable: `WHISPER_MODEL=whisper_tiny_ar_quran.pt`
-7. Deploy!
+1. Push code to GitHub
+2. Deploy on Railway
+3. Set root directory to `server`
+4. Model downloads automatically at startup
 
-**Render will give you a URL like:** `https://your-app.onrender.com`
+**No environment variables needed** - model ID is hardcoded in the server.
 
-### Option 3: Google Cloud Run
+## Model Details
 
-1. Install Google Cloud SDK
-2. Build container:
-   ```bash
-   cd server
-   docker build -t whisper-server .
-   ```
-3. Deploy:
-   ```bash
-   gcloud run deploy whisper-server --source .
-   ```
+- **Model**: `tarteel-ai/whisper-tiny-ar-quran`
+- **Source**: Hugging Face
+- **Format**: PyTorch (pytorch_model.bin)
+- **Language**: Arabic
+- **Size**: ~150MB (downloaded at runtime)
 
-### Option 4: AWS EC2 / DigitalOcean Droplet
+## Performance
 
-1. Create a VM instance (Ubuntu recommended)
-2. SSH into the server
-3. Install Python 3.9+
-4. Clone your repo
-5. Install dependencies: `pip install -r requirements.txt`
-6. Run: `python main.py`
-7. Use nginx as reverse proxy (optional)
-
-### Option 5: Local Network (For Testing)
-
-If running on your local machine:
-
-1. Find your local IP:
-   - Windows: `ipconfig` → IPv4 Address
-   - Mac/Linux: `ifconfig` or `ip addr`
-2. Run server: `python main.py`
-3. Use your local IP: `http://YOUR_LOCAL_IP:8000`
-4. Make sure your phone and computer are on the same WiFi network
+- **First Request**: May take longer (model loading)
+- **Subsequent Requests**: Fast (model in memory)
+- **Model Cache**: Persists between restarts (in `models_cache/`)
 
 ## Troubleshooting
 
-### Model Not Found
-- Check that `whisper_tiny_ar_quran.pt` is in the correct location
-- Check the server logs for the exact path it's searching
+### Model Not Loading
+- Check Railway logs for download errors
+- Verify Hugging Face model is accessible
+- Check disk space (model needs ~200MB)
 
-### CUDA/GPU Issues
-- The server will automatically use CPU if CUDA is not available
-- For GPU support, install CUDA-enabled PyTorch:
-  ```bash
-  pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-  ```
-
-### Port Already in Use
-- Change the port: `PORT=8001 python main.py`
-- Or kill the process using port 8000
-
-### CORS Errors
-- The server allows all origins by default
-- In production, update `allow_origins` in `main.py` to your app's domain
-
-## Model Format
-
-The server supports:
-- PyTorch `.pt` files (custom fine-tuned models)
-- Standard Whisper model names: `tiny`, `base`, `small`, `medium`, `large`
-
-If your `.pt` file is a standard Whisper checkpoint, it will load correctly. If it's a custom fine-tuned model, make sure it's compatible with the `openai-whisper` library format.
-
+### Transcription Fails
+- Verify audio file format is supported
+- Check audio file is ≤10 seconds
+- Ensure model is loaded (check `/health` endpoint)
