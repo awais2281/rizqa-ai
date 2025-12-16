@@ -53,7 +53,7 @@ def download_and_load_model():
     Download model from Hugging Face and load into memory
     Model is cached on disk after first download
     """
-    global model, processor, model_loaded
+    global model, processor, pipe, model_loaded
     
     if model_loaded:
         logger.info("Model already loaded")
@@ -272,6 +272,7 @@ async def transcribe_audio(
         logger.info(f"Preprocessed audio saved: {len(audio_array)} samples at 16kHz")
         
         # Use cached pipeline (created at startup) for faster inference
+        global pipe
         if pipe is None:
             logger.warning("Pipeline not cached, creating new one...")
             from transformers import pipeline
