@@ -197,17 +197,14 @@ async def transcribe_audio(
             return_timestamps=False,
         )
         
-        # Transcribe with language hint
-        # For fine-tuned Arabic models, we can pass language in generate_kwargs
-        logger.info(f"Running transcription (language: {language})...")
+        # Transcribe - for fine-tuned Arabic model, we don't need to force language
+        # The model is already trained for Arabic, so it will transcribe in Arabic
+        logger.info(f"Running transcription (model is fine-tuned for Arabic)...")
         
-        # Use generate_kwargs to set language tokens properly
-        forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
-        
+        # Use generate_kwargs for optimization only (no language forcing needed)
         result = pipe(
             tmp_file_path,
             generate_kwargs={
-                "forced_decoder_ids": forced_decoder_ids,
                 "max_new_tokens": 200,  # Sufficient for short audio
                 "num_beams": 1,  # Greedy decoding for speed
                 "do_sample": False,  # Deterministic
