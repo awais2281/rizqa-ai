@@ -184,6 +184,66 @@ async def transcribe_audio(
         
         logger.info(f"Transcribing audio: {file.filename} ({len(content)} bytes)")
         
+        # Audio preprocessing for better accuracy
+        import librosa
+        import numpy as np
+        from scipy.io import wavfile
+        
+        logger.info("Preprocessing audio...")
+        
+        # Load audio with librosa (handles various formats)
+        audio_array, original_sr = librosa.load(tmp_file_path, sr=None, mono=True)
+        
+        # Resample to 16kHz if needed (Whisper requirement)
+        if original_sr != 16000:
+            logger.info(f"Resampling from {original_sr}Hz to 16000Hz")
+            audio_array = librosa.resample(audio_array, orig_sr=original_sr, target_sr=16000)
+        
+        # Normalize audio to prevent clipping and improve quality
+        max_val = np.abs(audio_array).max()
+        if max_val > 0:
+            # Normalize to [-1, 1] range, but avoid over-amplification
+            if max_val < 1.0:
+                audio_array = audio_array / max_val * 0.95  # Scale to 95% to avoid clipping
+            else:
+                audio_array = audio_array / max_val * 0.95
+        
+        # Remove silence at start and end
+        # Use librosa's silence detection
+        frame_length = 2048
+        hop_length = 512
+        threshold_db = -40  # Silence threshold in dB
+        
+        # Calculate energy
+        energy = librosa.feature.rms(y=audio_array, frame_length=frame_length, hop_length=hop_length)[0]
+        energy_db = librosa.power_to_db(energy**2, ref=np.max)
+        
+        # Find non-silent frames
+        non_silent_frames = np.where(energy_db > threshold_db)[0]
+        
+        if len(non_silent_frames) > 0:
+            # Convert frame indices to sample indices
+            start_frame = non_silent_frames[0]
+            end_frame = non_silent_frames[-1]
+            start_sample = start_frame * hop_length
+            end_sample = min((end_frame + 1) * hop_length, len(audio_array))
+            
+            # Trim silence
+            audio_array = audio_array[start_sample:end_sample]
+            logger.info(f"Trimmed silence: {len(audio_array)} samples remaining (removed {start_sample} from start, {len(audio_array) - end_sample} from end)")
+        
+        # Ensure minimum length (at least 0.5 seconds)
+        min_samples = int(16000 * 0.5)  # 0.5 seconds at 16kHz
+        if len(audio_array) < min_samples:
+            logger.warning(f"Audio too short ({len(audio_array)} samples), padding to minimum")
+            padding = np.zeros(min_samples - len(audio_array))
+            audio_array = np.concatenate([padding, audio_array])
+        
+        # Save preprocessed audio to temporary file
+        preprocessed_path = tmp_file_path.replace(file_ext, '_preprocessed.wav')
+        wavfile.write(preprocessed_path, 16000, (audio_array * 32767).astype(np.int16))
+        logger.info(f"Preprocessed audio saved: {len(audio_array)} samples at 16kHz")
+        
         # Use pipeline for optimized inference
         from transformers import pipeline
         
@@ -199,17 +259,17 @@ async def transcribe_audio(
         
         # Transcribe - for fine-tuned Arabic model, we don't need to force language
         # The model is already trained for Arabic, so it will transcribe in Arabic
-        logger.info(f"Running transcription (model is fine-tuned for Arabic)...")
+        logger.info(f"Running transcription (model: {MODEL_ID})...")
         logger.info(f"Starting pipeline inference...")
         
-        # Use generate_kwargs for optimization only (no language forcing needed)
+        # Use generate_kwargs for optimization
         import time
         start_time = time.time()
         
         result = pipe(
-            tmp_file_path,
+            preprocessed_path,  # Use preprocessed audio
             generate_kwargs={
-                "max_new_tokens": 150,  # Reduced for faster generation
+                "max_new_tokens": 200,  # Increased for base model (better accuracy)
                 "num_beams": 1,  # Greedy decoding for speed
                 "do_sample": False,  # Deterministic
             }
@@ -219,7 +279,15 @@ async def transcribe_audio(
         logger.info(f"Pipeline inference completed in {elapsed_time:.2f} seconds")
         
         transcribed_text = result.get("text", "").strip()
+        logger.info(f"Transcription result: {transcribed_text[:100]}...")
         logger.info(f"Transcription result length: {len(transcribed_text)} characters")
+        
+        # Clean up preprocessed file
+        try:
+            if os.path.exists(preprocessed_path):
+                os.unlink(preprocessed_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete preprocessed file: {e}")
         
         if not transcribed_text:
             logger.warning("Empty transcription result")
@@ -241,12 +309,21 @@ async def transcribe_audio(
             detail=f"Transcription failed: {str(e)}"
         )
     finally:
-        # Clean up temporary file
+        # Clean up temporary files
         if tmp_file_path and os.path.exists(tmp_file_path):
             try:
                 os.unlink(tmp_file_path)
             except Exception as e:
                 logger.warning(f"Failed to delete temp file: {e}")
+        
+        # Clean up preprocessed file if it exists
+        if tmp_file_path:
+            preprocessed_path = tmp_file_path.replace(Path(tmp_file_path).suffix, '_preprocessed.wav')
+            if os.path.exists(preprocessed_path):
+                try:
+                    os.unlink(preprocessed_path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete preprocessed file: {e}")
 
 @app.post("/reload-model")
 async def reload_model():
