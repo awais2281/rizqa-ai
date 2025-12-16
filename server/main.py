@@ -206,20 +206,23 @@ async def transcribe_audio(
         # Whisper uses language tokens like <|ar|> for Arabic
         forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
         
-        # Prepare decoder_input_ids from the forced decoder IDs
-        # The first token should be the language token
-        decoder_input_ids = torch.tensor([[forced_decoder_ids[0][1]]], device=device)
+        # forced_decoder_ids format: [(bos_token_id, language_token_id)]
+        # We need decoder_input_ids to start with [bos_token_id, language_token_id]
+        bos_token_id = forced_decoder_ids[0][0]
+        language_token_id = forced_decoder_ids[0][1]
+        decoder_input_ids = torch.tensor([[bos_token_id, language_token_id]], device=device)
         
         # For short audio (≤10 seconds), we don't need the full 448 tokens
-        # Account for the decoder prompt tokens (usually 1-2 tokens)
-        # Set max_new_tokens to 400 to leave room for prompt tokens
-        max_new_tokens = 400
+        # Set max_new_tokens to 200 for faster generation (sufficient for short audio)
+        max_new_tokens = 200
         
         with torch.no_grad():
             generated_ids = model.generate(
                 inputs["input_features"],
                 decoder_input_ids=decoder_input_ids,
                 max_new_tokens=max_new_tokens,
+                num_beams=1,  # Use greedy decoding for speed
+                do_sample=False,  # Deterministic output
             )
         
         # Decode transcription
