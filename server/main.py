@@ -184,50 +184,37 @@ async def transcribe_audio(
         
         logger.info(f"Transcribing audio: {file.filename} ({len(content)} bytes)")
         
-        # Load audio file
-        import librosa
+        # Use pipeline for optimized inference
+        from transformers import pipeline
         
-        # Load audio (resample to 16kHz for Whisper)
-        audio_array, sampling_rate = librosa.load(tmp_file_path, sr=16000)
+        # Create pipeline (reuse model and processor)
+        pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            device=0 if device == "cuda" else -1,
+            return_timestamps=False,
+        )
         
-        # Process audio with processor
-        inputs = processor(audio_array, sampling_rate=sampling_rate, return_tensors="pt")
-        
-        # Move inputs to device
-        if device == "cpu":
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-        else:
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-        
-        # Generate transcription
+        # Transcribe with language hint
+        # For fine-tuned Arabic models, we can pass language in generate_kwargs
         logger.info(f"Running transcription (language: {language})...")
         
-        # Prepare decoder input IDs with language tokens
-        # Whisper uses language tokens like <|ar|> for Arabic
+        # Use generate_kwargs to set language tokens properly
         forced_decoder_ids = processor.get_decoder_prompt_ids(language=language, task="transcribe")
         
-        # forced_decoder_ids format: [(bos_token_id, language_token_id)]
-        # We need decoder_input_ids to start with [bos_token_id, language_token_id]
-        bos_token_id = forced_decoder_ids[0][0]
-        language_token_id = forced_decoder_ids[0][1]
-        decoder_input_ids = torch.tensor([[bos_token_id, language_token_id]], device=device)
+        result = pipe(
+            tmp_file_path,
+            generate_kwargs={
+                "forced_decoder_ids": forced_decoder_ids,
+                "max_new_tokens": 200,  # Sufficient for short audio
+                "num_beams": 1,  # Greedy decoding for speed
+                "do_sample": False,  # Deterministic
+            }
+        )
         
-        # For short audio (≤10 seconds), we don't need the full 448 tokens
-        # Set max_new_tokens to 200 for faster generation (sufficient for short audio)
-        max_new_tokens = 200
-        
-        with torch.no_grad():
-            generated_ids = model.generate(
-                inputs["input_features"],
-                decoder_input_ids=decoder_input_ids,
-                max_new_tokens=max_new_tokens,
-                num_beams=1,  # Use greedy decoding for speed
-                do_sample=False,  # Deterministic output
-            )
-        
-        # Decode transcription
-        transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        transcribed_text = transcription.strip()
+        transcribed_text = result.get("text", "").strip()
         
         if not transcribed_text:
             logger.warning("Empty transcription result")
