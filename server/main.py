@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Whisper Arabic Transcription API",
-    description="Production inference server for tarteel-ai/whisper-tiny-ar-quran",
-    version="1.0.0"
+    description="Production inference server for tarteel-ai/whisper-base-ar-quran (upgraded from tiny)",
+    version="2.0.0"
 )
 
 # CORS middleware - allow requests from React Native app
@@ -44,7 +44,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model_loaded = False
 
 # Model configuration
-MODEL_ID = "tarteel-ai/whisper-tiny-ar-quran"
+MODEL_ID = "tarteel-ai/whisper-base-ar-quran"  # Upgraded from tiny to base for better accuracy
 MODEL_CACHE_DIR = os.getenv("MODEL_CACHE_DIR", "./models_cache")
 
 def download_and_load_model():
