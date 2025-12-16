@@ -19,10 +19,12 @@ export const WHISPER_SERVER_CONFIG = {
   // Local: 'http://10.0.2.2:8000' (for Android Emulator)
   // Local: 'http://192.168.1.100:8000' (for physical device - replace with your IP)
   // Production: 'https://your-app.railway.app'
+  // Update this with your Railway server URL
   baseUrl: __DEV__ 
-    ? 'http://localhost:8000'  // Development - change to your local server
-    : 'https://your-app.railway.app',  // Production - change to your deployed server
+    ? 'http://localhost:8000'  // Development - for local testing
+    : 'https://your-railway-url.up.railway.app',  // Production - UPDATE THIS with your Railway URL
   
   timeout: 60000, // 60 seconds timeout
 };
+
 
