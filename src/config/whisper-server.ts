@@ -22,7 +22,7 @@ export const WHISPER_SERVER_CONFIG = {
   // Update this with your Railway server URL
   baseUrl: __DEV__ 
     ? 'http://localhost:8000'  // Development - for local testing
-    : 'https://your-railway-url.up.railway.app',  // Production - UPDATE THIS with your Railway URL
+    : 'https://rizqa-ai-production.up.railway.app',  // Production - Railway server
   
   timeout: 60000, // 60 seconds timeout
 };
