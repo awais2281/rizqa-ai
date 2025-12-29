@@ -9,7 +9,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const quranData = require('../../qurandata/quran (1).json');
+const quranMetadata = require('../../qurandata/indopaknew-data.json');
+import { loadQuranData, Verse } from '../utils/quranDataLoader';
+
+// Optional: English translations (if available)
+// Load without old data since it's optional and may not exist
+const quranData = loadQuranData(quranMetadata, undefined);
 
 // Surah names mapping
 const surahNames: { [key: number]: { transliteration: string; translation: string } } = {
@@ -129,11 +134,7 @@ const surahNames: { [key: number]: { transliteration: string; translation: strin
   114: { transliteration: 'An-Nas', translation: 'Mankind' },
 };
 
-interface Verse {
-  chapter: number;
-  verse: number;
-  text: string;
-}
+// Verse interface is now imported from quranDataLoader
 
 interface SurahScreenProps {
   route: any;
@@ -142,8 +143,8 @@ interface SurahScreenProps {
 
 export default function SurahScreen({ route, navigation }: SurahScreenProps) {
   const { chapter } = route.params;
-  const chapterKey = chapter.toString();
-  const verses: Verse[] = quranData[chapterKey] || [];
+  // Filter verses for the selected chapter from the array format
+  const verses: Verse[] = quranData.filter((v: Verse) => v.surah_no === chapter);
   const surahInfo = surahNames[chapter] || { transliteration: `Surah ${chapter}`, translation: '' };
   const insets = useSafeAreaInsets();
 
@@ -166,9 +167,9 @@ export default function SurahScreen({ route, navigation }: SurahScreenProps) {
         {verses.map((verse, index) => (
           <View key={index} style={styles.verseItem}>
             <View style={styles.verseNumberContainer}>
-              <Text style={styles.verseNumber}>{verse.verse}</Text>
+              <Text style={styles.verseNumber}>{verse.ayah_no_surah}</Text>
             </View>
-            <Text style={styles.verseText}>{verse.text}</Text>
+            <Text style={styles.verseText}>{verse.ayah_ar}</Text>
           </View>
         ))}
       </ScrollView>
@@ -247,8 +248,9 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 24,
     color: '#FFFFFF',
-    lineHeight: 40,
+    lineHeight: 48,
     textAlign: 'right',
+    fontFamily: 'IndoPak',
   },
 });
 

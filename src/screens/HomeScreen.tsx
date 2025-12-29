@@ -7,12 +7,21 @@ import {
   ActivityIndicator,
   FlatList,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
+import { Ionicons } from '@expo/vector-icons';
+import { splitArabicVerseIntoChunks, getChunkString } from '../utils/arabicChunking';
+import { calculateExpectedHash } from '../recitation/arabicCompare';
 
-const quranData = require('../../qurandata/quran (1).json');
+const quranMetadata = require('../../qurandata/indopaknew-data.json');
+import { loadQuranData, getVerseBySurahAndAyah, Verse } from '../utils/quranDataLoader';
+import { getVerseTranslation } from '../utils/translationLoader';
+
+// Optional: English translations (if available)
+// Load without old data since it's optional and may not exist
+const quranData = loadQuranData(quranMetadata, undefined);
 
 // Surah names mapping
 const surahNames: { [key: number]: { transliteration: string; translation: string } } = {
@@ -132,38 +141,58 @@ const surahNames: { [key: number]: { transliteration: string; translation: strin
   114: { transliteration: 'An-Nas', translation: 'Mankind' },
 };
 
-interface Verse {
-  chapter: number;
-  verse: number;
-  text: string;
-}
+// Verse interface is now imported from quranDataLoader
 
 interface HomeScreenProps {
   navigation: any;
 }
 
 export default function HomeScreen({ navigation }: HomeScreenProps) {
+  const insets = useSafeAreaInsets();
   const [currentVerseIndex, setCurrentVerseIndex] = useState(0);
+  const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [completedSurahs, setCompletedSurahs] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [allVerses, setAllVerses] = useState<Array<{ chapter: number; verse: Verse }>>([]);
+  const [memorizedVersesCount, setMemorizedVersesCount] = useState(0);
+  const [streakCount, setStreakCount] = useState(0);
+  const [weeklyProgress, setWeeklyProgress] = useState<boolean[]>(new Array(7).fill(false));
+  const [likedVerses, setLikedVerses] = useState<Set<string>>(new Set());
+
+  // Daily rotating motivational messages
+  const dailyMessages = [
+    "Nice work showing up today.",
+    "A little progress today goes a long way.",
+    "You're building something—keep going.",
+    "This habit is starting to stick.",
+    "Momentum looks good on you.",
+    "Future you will thank you for today.",
+    "Showing up again? That's how it works.",
+  ];
+
+  // Get today's message based on day of year (rotates daily)
+  const getDailyMessage = (): string => {
+    const today = new Date();
+    const startOfYear = new Date(today.getFullYear(), 0, 0);
+    const dayOfYear = Math.floor((today.getTime() - startOfYear.getTime()) / (1000 * 60 * 60 * 24));
+    const messageIndex = dayOfYear % dailyMessages.length;
+    return dailyMessages[messageIndex];
+  };
 
   useEffect(() => {
-    // Load all verses in order from the new JSON structure
+    // Load all verses in order from the converted data
     const verses: Array<{ chapter: number; verse: Verse }> = [];
     
-    // Iterate through all chapters (1-114)
-    for (let chapter = 1; chapter <= 114; chapter++) {
-      const chapterKey = chapter.toString();
-      if (quranData[chapterKey] && Array.isArray(quranData[chapterKey])) {
-        quranData[chapterKey].forEach((verse: Verse) => {
-          verses.push({ chapter, verse });
-        });
-      }
-    }
+    // quranData is now an array, map it to the expected format
+    quranData.forEach((verse: Verse) => {
+      verses.push({ chapter: verse.surah_no, verse });
+    });
     
     setAllVerses(verses);
     loadProgress(verses);
+    loadMemorizedVersesCount();
+    updateStreakAndWeeklyProgress();
+    loadLikedVerses();
   }, []);
 
   // Reload progress when screen comes into focus (e.g., returning from TestScreen)
@@ -172,6 +201,9 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
       if (allVerses.length > 0) {
         loadProgress(allVerses);
       }
+      loadMemorizedVersesCount();
+      updateStreakAndWeeklyProgress();
+      loadLikedVerses();
     }, [allVerses])
   );
 
@@ -179,23 +211,255 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     try {
       const savedSurah = await AsyncStorage.getItem('currentSurah');
       const savedAyah = await AsyncStorage.getItem('currentAyah');
+      const savedChunkIndex = await AsyncStorage.getItem('currentChunkIndex');
       
       if (savedSurah && savedAyah) {
         const surah = parseInt(savedSurah);
         const ayah = parseInt(savedAyah);
         // Find the index of the verse
         const index = verses.findIndex(
-          (v) => v.chapter === surah && v.verse.verse === ayah
+          (v) => v.chapter === surah && v.verse.ayah_no_surah === ayah
         );
         if (index !== -1) {
           setCurrentVerseIndex(index);
+          if (savedChunkIndex) {
+            setCurrentChunkIndex(parseInt(savedChunkIndex));
+          }
         }
+      } else {
+        // No saved progress - start from the beginning (Surah 1, Ayah 1)
+        console.log('[HomeScreen] No saved progress, starting from beginning');
+        setCurrentVerseIndex(0);
+        setCurrentChunkIndex(0);
       }
     } catch (error) {
       console.error('Error loading progress:', error);
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadMemorizedVersesCount = async () => {
+    try {
+      const count = await AsyncStorage.getItem('memorizedVersesCount');
+      setMemorizedVersesCount(count ? parseInt(count) : 0);
+    } catch (error) {
+      console.error('Error loading memorized verses count:', error);
+    }
+  };
+
+  const formatDateKey = (date: Date): string => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const getVerseKey = (surahNo: number, ayahNo: number): string => {
+    return `${surahNo}:${ayahNo}`;
+  };
+
+  const loadLikedVerses = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('likedVerses');
+      if (stored) {
+        const liked = JSON.parse(stored);
+        setLikedVerses(new Set(liked));
+      }
+    } catch (error) {
+      console.error('Error loading liked verses:', error);
+    }
+  };
+
+  const toggleLikeVerse = async () => {
+    if (!currentVerseData) return;
+    
+    try {
+      const verseKey = getVerseKey(
+        currentVerseData.verse.surah_no,
+        currentVerseData.verse.ayah_no_surah
+      );
+      
+      const newLikedVerses = new Set(likedVerses);
+      if (newLikedVerses.has(verseKey)) {
+        newLikedVerses.delete(verseKey);
+      } else {
+        newLikedVerses.add(verseKey);
+      }
+      
+      setLikedVerses(newLikedVerses);
+      
+      // Save to AsyncStorage
+      const likedArray = Array.from(newLikedVerses);
+      await AsyncStorage.setItem('likedVerses', JSON.stringify(likedArray));
+      
+      // Also save the full verse data
+      const storedVerses = await AsyncStorage.getItem('likedVersesData');
+      const likedVersesData = storedVerses ? JSON.parse(storedVerses) : {};
+      
+      if (newLikedVerses.has(verseKey)) {
+        // Add verse data
+        const surahInfo = surahNames[currentVerseData.verse.surah_no] || {
+          transliteration: `Surah ${currentVerseData.verse.surah_no}`,
+          translation: ''
+        };
+        likedVersesData[verseKey] = {
+          surah_no: currentVerseData.verse.surah_no,
+          ayah_no_surah: currentVerseData.verse.ayah_no_surah,
+          ayah_ar: currentVerseData.verse.ayah_ar,
+          ayah_en: getVerseTranslation(currentVerseData.verse.surah_no, currentVerseData.verse.ayah_no_surah),
+          surah_name: surahInfo.transliteration,
+          surah_translation: surahInfo.translation,
+        };
+      } else {
+        // Remove verse data
+        delete likedVersesData[verseKey];
+      }
+      
+      await AsyncStorage.setItem('likedVersesData', JSON.stringify(likedVersesData));
+    } catch (error) {
+      console.error('Error toggling like:', error);
+    }
+  };
+
+  const isVerseLiked = (): boolean => {
+    if (!currentVerseData) return false;
+    const verseKey = getVerseKey(
+      currentVerseData.verse.surah_no,
+      currentVerseData.verse.ayah_no_surah
+    );
+    return likedVerses.has(verseKey);
+  };
+
+  const updateStreakAndWeeklyProgress = async () => {
+    try {
+      const today = new Date();
+      const todayKey = formatDateKey(today);
+      
+      // Mark today as active
+      const stored = await AsyncStorage.getItem('streakDays');
+      let days = stored ? JSON.parse(stored) : [];
+      
+      if (!days.includes(todayKey)) {
+        days.push(todayKey);
+        await AsyncStorage.setItem('streakDays', JSON.stringify(days));
+      }
+
+      // Check for gaps - if yesterday was missed, reset streak to just today
+      const sortedDays = days.sort();
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayKey = formatDateKey(yesterday);
+      
+      // If yesterday is not in the list, there's a gap - reset to just today
+      if (!sortedDays.includes(yesterdayKey)) {
+        // Reset streak - keep only today
+        days = [todayKey];
+        await AsyncStorage.setItem('streakDays', JSON.stringify(days));
+        sortedDays.length = 0;
+        sortedDays.push(todayKey);
+      }
+      
+      // Calculate consecutive days from today backwards
+      let streak = 0;
+      let checkDate = new Date(today);
+      
+      // Today is always marked, so start with 1
+        streak = 1;
+        checkDate.setDate(checkDate.getDate() - 1);
+      
+      // Count consecutive days backwards
+      while (true) {
+        const dateKey = formatDateKey(checkDate);
+        if (sortedDays.includes(dateKey)) {
+          streak++;
+          checkDate.setDate(checkDate.getDate() - 1);
+        } else {
+          break;
+        }
+      }
+      
+      setStreakCount(streak);
+      
+      // Update weekly progress
+      const weekly: boolean[] = new Array(7).fill(false);
+      const dayOfWeek = today.getDay(); // 0 = Sunday, 6 = Saturday
+      
+      // Get the start of the week (Sunday)
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - dayOfWeek);
+      
+      // Check each day of the week
+      for (let i = 0; i < 7; i++) {
+        const checkDate = new Date(startOfWeek);
+        checkDate.setDate(startOfWeek.getDate() + i);
+        const dateKey = formatDateKey(checkDate);
+        weekly[i] = sortedDays.includes(dateKey);
+      }
+      
+      setWeeklyProgress(weekly);
+    } catch (error) {
+      console.error('Error updating streak and weekly progress:', error);
+      setStreakCount(0);
+      setWeeklyProgress(new Array(7).fill(false));
+    }
+  };
+
+  const calculateStreak = async () => {
+    // Legacy function - redirect to new function
+    await updateStreakAndWeeklyProgress();
+  };
+
+
+  // Get transliteration for a verse by surah and ayah number
+  const getTransliteration = (surahNo: number, ayahNo: number): string => {
+    try {
+      const key = `${surahNo}:${ayahNo}`;
+      
+      if (transliteratedData[key] && transliteratedData[key].t) {
+        return transliteratedData[key].t;
+      }
+    } catch (error) {
+      console.error('Error getting transliteration:', error);
+    }
+    return '';
+  };
+
+  // Get current chunk of Arabic verse to display
+  // Uses the shared utility function to ensure consistency with TestScreen
+  const getCurrentChunk = (): string => {
+    const currentVerse = getCurrentVerse();
+    if (!currentVerse) return '';
+    
+    const arabicVerse = currentVerse.verse.ayah_ar;
+    if (!arabicVerse) return '';
+    
+    // Use the shared utility function - SINGLE SOURCE OF TRUTH
+    const chunk = getChunkString(arabicVerse, currentChunkIndex, 8);
+    
+    // Calculate hash for verification
+    const chunkHash = calculateExpectedHash(chunk);
+    
+    console.log(`[HOMESCREEN] Displaying chunk ${currentChunkIndex + 1}:`, chunk);
+    console.log(`[HOMESCREEN] Expected chunk hash (sha1):`, chunkHash);
+    console.log(`[HOMESCREEN] This IS the exact chunk TestScreen will use for scoring`);
+    console.log(`[HOMESCREEN] TestScreen MUST use chunk with hash:`, chunkHash);
+    
+    return chunk;
+  };
+
+  // Get total number of chunks for current verse
+  // Uses the same chunking function as TestScreen to ensure consistency
+  const getTotalChunks = (): number => {
+    const currentVerse = getCurrentVerse();
+    if (!currentVerse) return 0;
+    
+    const arabicVerse = currentVerse.verse.ayah_ar;
+    if (!arabicVerse) return 0;
+    
+    // Use the same balanced chunking function as TestScreen
+    const chunks = splitArabicVerseIntoChunks(arabicVerse, 8);
+    return chunks.length;
   };
 
   useEffect(() => {
@@ -250,26 +514,167 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
     <>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.greeting}>Assalamu Alaikum</Text>
-        <Text style={styles.subtitle}>Today's Verse</Text>
+        <View style={styles.headerTopRow}>
+          <View style={styles.streakContainer}>
+            <Text style={styles.streakText}>
+              🔥 {streakCount} {streakCount === 1 ? 'day' : 'days'}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Streak Box */}
+      <View style={styles.streakBox}>
+        <View style={styles.weeklyProgressContainer}>
+          <View style={styles.weekDaysRow}>
+            {(() => {
+              const dayLabels = ['Su', 'M', 'Tu', 'W', 'Th', 'F', 'Sa'];
+              // Reorder day labels to match the reordered progress (checked days first)
+              const reorderedLabels = weeklyProgress
+                .map((isFilled, originalIndex) => ({ 
+                  label: dayLabels[originalIndex], 
+                  isFilled, 
+                  originalIndex 
+                }))
+                .sort((a, b) => {
+                  // Checked days come first (true before false)
+                  if (a.isFilled !== b.isFilled) {
+                    return a.isFilled ? -1 : 1;
+                  }
+                  // If both have same status, maintain original order
+                  return a.originalIndex - b.originalIndex;
+                });
+              
+              return reorderedLabels.map(({ label, originalIndex }, displayIndex) => {
+                const today = new Date();
+                const dayOfWeek = today.getDay();
+                const isToday = originalIndex === dayOfWeek;
+                
+                return (
+                  <Text 
+                    key={originalIndex} 
+                    style={[
+                      styles.weekDayLabel,
+                      isToday && styles.weekDayLabelToday
+                    ]}
+                  >
+                    {label}
+          </Text>
+                );
+              });
+            })()}
+        </View>
+          <View style={styles.progressBar}>
+            {(() => {
+              // Reorder: checked days first, then unchecked days
+              const reorderedProgress = weeklyProgress
+                .map((isFilled, originalIndex) => ({ isFilled, originalIndex }))
+                .sort((a, b) => {
+                  // Checked days come first (true before false)
+                  if (a.isFilled !== b.isFilled) {
+                    return a.isFilled ? -1 : 1;
+                  }
+                  // If both have same status, maintain original order
+                  return a.originalIndex - b.originalIndex;
+                });
+              
+              return reorderedProgress.map(({ isFilled, originalIndex }, displayIndex) => {
+                const today = new Date();
+                const dayOfWeek = today.getDay();
+                const isToday = originalIndex === dayOfWeek;
+                
+                // Check if adjacent days in the reordered array are filled
+                const prevFilled = displayIndex > 0 && reorderedProgress[displayIndex - 1].isFilled;
+                const nextFilled = displayIndex < 6 && reorderedProgress[displayIndex + 1]?.isFilled;
+                
+                // Determine border radius and margin based on position in streak
+                let borderRadiusStyle = {};
+                let marginStyle = {};
+                if (isFilled) {
+                  if (!prevFilled && !nextFilled) {
+                    // Single isolated day - full border radius, margin on both sides
+                    borderRadiusStyle = { borderRadius: 16 };
+                    marginStyle = { marginHorizontal: 4 };
+                  } else if (!prevFilled) {
+                    // Start of streak - left rounded, margin on left
+                    borderRadiusStyle = { borderTopLeftRadius: 16, borderBottomLeftRadius: 16 };
+                    marginStyle = { marginLeft: 4 };
+                  } else if (!nextFilled) {
+                    // End of streak - right rounded, margin on right
+                    borderRadiusStyle = { borderTopRightRadius: 16, borderBottomRightRadius: 16 };
+                    marginStyle = { marginRight: 4 };
+                  } else {
+                    // Middle of streak - no border radius, no margin
+                    borderRadiusStyle = { borderRadius: 0 };
+                    marginStyle = {};
+                  }
+                }
+                
+                return (
+                  <View key={originalIndex} style={styles.progressDayContainer}>
+                    {isFilled ? (
+                      <View style={[
+                        styles.progressDayFilled,
+                        borderRadiusStyle,
+                        marginStyle
+                      ]}>
+                        <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+                      </View>
+                    ) : (
+                      <View style={styles.progressDayEmpty} />
+                    )}
+                  </View>
+                );
+              });
+            })()}
+          </View>
+        </View>
+        <View style={styles.motivationalBox}>
+          <Text style={styles.motivationalText}>{getDailyMessage()}</Text>
+        </View>
       </View>
 
       {/* Today's Verse Card */}
       {currentVerseData && currentSurahInfo ? (
         <View style={styles.verseCard}>
-          {/* Arabic Text Only */}
-          <Text style={styles.arabicText}>
-            {currentVerseData.verse.text}
-          </Text>
+          {/* Arabic Verse - Current Chunk */}
+          {(() => {
+            const currentChunk = getCurrentChunk();
+            const totalChunks = getTotalChunks();
+            return currentChunk ? (
+              <View style={styles.transliterationContainer}>
+                <Text style={styles.transliterationSubtitle}>
+                  Arabic Verse {totalChunks > 1 ? `(Part ${currentChunkIndex + 1} of ${totalChunks})` : ''}
+                </Text>
+                <Text style={styles.arabicText}>{currentChunk}</Text>
+              </View>
+            ) : null;
+          })()}
+          
+          {/* English Translation */}
+          <View style={styles.translationContainer}>
+            <Text style={styles.translationSubtitle}>Full Verse Translation</Text>
+            <Text style={styles.englishText}>
+              {getVerseTranslation(currentVerseData.verse.surah_no, currentVerseData.verse.ayah_no_surah)}
+            </Text>
+          </View>
 
           {/* Bottom Row */}
           <View style={styles.cardFooter}>
             <Text style={styles.verseReference}>
-              Surah {currentSurahInfo.transliteration}, {currentVerseData.verse.verse}
+              Surah {currentSurahInfo.transliteration}, {currentVerseData.verse.ayah_no_surah}
             </Text>
             <View style={styles.actionButtons}>
-              <TouchableOpacity style={styles.actionButton}>
-                <Text style={styles.actionButtonIcon}>♡</Text>
+              <TouchableOpacity 
+                style={styles.actionButton}
+                onPress={toggleLikeVerse}
+              >
+                <Text style={[
+                  styles.actionButtonIcon,
+                  isVerseLiked() && styles.likedIcon
+                ]}>
+                  {isVerseLiked() ? '❤️' : '♡'}
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.actionButton}>
                 <Text style={styles.actionButtonIcon}>↗</Text>
@@ -312,7 +717,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
               </View>
             </View>
             {completedSurahs.has(item.chapter) && (
-              <Text style={styles.checkmark}>✓</Text>
+              <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
             )}
           </TouchableOpacity>
         )}
@@ -329,21 +734,21 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
       />
 
       {/* Bottom Navigation Bar */}
-      <View style={styles.bottomNav}>
+      <View style={[styles.bottomNav, { paddingBottom: Math.max(insets.bottom, 20) }]}>
         <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Home')}>
-          <Text style={[styles.navIcon, styles.navIconActive]}>⌂</Text>
+          <Ionicons name="home" size={24} color="#4A90E2" />
           <Text style={[styles.navLabel, styles.navLabelActive]}>Home</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem}>
-          <Text style={styles.navIcon}>🔥</Text>
+        <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Streak')}>
+          <Ionicons name="flame" size={24} color="#FFFFFF" />
           <Text style={styles.navLabel}>Streak</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Test')}>
-          <Text style={styles.navIcon}>🎤</Text>
+          <Ionicons name="book" size={24} color="#FFFFFF" />
           <Text style={styles.navLabel}>Test</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem}>
-          <Text style={styles.navIcon}>⚙</Text>
+        <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Settings')}>
+          <Ionicons name="settings" size={24} color="#FFFFFF" />
           <Text style={styles.navLabel}>Settings</Text>
         </TouchableOpacity>
       </View>
@@ -354,13 +759,13 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#0F1419', // Subtle blueish dark background
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#000000',
+    backgroundColor: '#0F1419', // Subtle blueish dark background
   },
   listContent: {
     paddingBottom: 100, // Space for bottom nav
@@ -368,8 +773,15 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'center',
     paddingTop: 20,
-    paddingBottom: 20,
+    paddingBottom: 10,
     paddingHorizontal: 20,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    width: '100%',
+    marginBottom: 10,
   },
   greeting: {
     fontSize: 28,
@@ -380,6 +792,30 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 16,
     color: '#999999',
+  },
+  streakContainer: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: '#4A90E2', // Blue background to match streak theme
+    borderRadius: 20,
+  },
+  streakText: {
+    fontSize: 14,
+    color: '#FFFFFF', // White text on blue background
+    fontWeight: '600',
+  },
+  memorizedCountContainer: {
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(74, 144, 226, 0.2)',
+    borderRadius: 20,
+    alignSelf: 'flex-start',
+  },
+  memorizedCountText: {
+    fontSize: 14,
+    color: '#4A90E2',
+    fontWeight: '600',
   },
   verseCard: {
     backgroundColor: '#1A1A1A',
@@ -394,10 +830,57 @@ const styles = StyleSheet.create({
     fontSize: 32,
     color: '#FFFFFF',
     textAlign: 'center',
-    lineHeight: 50,
-    fontFamily: 'System',
+    lineHeight: 60,
+    fontFamily: 'IndoPak',
     flex: 1,
-    marginBottom: 20,
+    marginBottom: 15,
+  },
+  transliterationContainer: {
+    marginTop: 20,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.05)', // Subtle border matching design
+    width: '100%',
+    alignItems: 'center',
+  },
+  transliterationSubtitle: {
+    fontSize: 12,
+    color: '#999999',
+    marginBottom: 8,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  transliterationText: {
+    fontSize: 16,
+    color: '#E0E0E0',
+    textAlign: 'center',
+    lineHeight: 24,
+    paddingHorizontal: 10,
+  },
+  translationContainer: {
+    marginTop: 20,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.05)', // Subtle border matching design
+    width: '100%',
+    alignItems: 'center',
+  },
+  translationSubtitle: {
+    fontSize: 12,
+    color: '#999999',
+    marginBottom: 8,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  englishText: {
+    fontSize: 16,
+    color: '#CCCCCC',
+    textAlign: 'center',
+    lineHeight: 24,
+    fontStyle: 'italic',
+    paddingHorizontal: 10,
   },
   cardFooter: {
     flexDirection: 'row',
@@ -424,6 +907,9 @@ const styles = StyleSheet.create({
   actionButtonIcon: {
     fontSize: 18,
     color: '#FFFFFF',
+  },
+  likedIcon: {
+    color: '#E74C3C',
   },
   completedText: {
     fontSize: 24,
@@ -454,7 +940,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#333333',
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)', // Subtle border matching design
   },
   surahListItemContent: {
     flexDirection: 'row',
@@ -478,8 +964,10 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   surahTranslation: {
-    fontSize: 12,
-    color: '#999999',
+    fontSize: 13,
+    color: '#CCCCCC',
+    fontWeight: '400',
+    marginTop: 2,
   },
   checkmark: {
     fontSize: 20,
@@ -491,11 +979,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    backgroundColor: '#000000',
+    backgroundColor: '#0F1419', // Subtle blueish dark background
     paddingVertical: 10,
-    paddingBottom: 20,
     borderTopWidth: 1,
-    borderTopColor: '#333333',
+    borderTopColor: '#1A1F2E', // Subtle blueish border
     position: 'absolute',
     bottom: 0,
     left: 0,
@@ -507,7 +994,7 @@ const styles = StyleSheet.create({
   },
   navIcon: {
     fontSize: 24,
-    color: '#FFFFFF',
+    color: '#000000',
     marginBottom: 4,
   },
   navIconActive: {
@@ -519,5 +1006,77 @@ const styles = StyleSheet.create({
   },
   navLabelActive: {
     color: '#4A90E2',
+  },
+  streakBox: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 15,
+    padding: 20,
+    marginHorizontal: 20,
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  weeklyProgressContainer: {
+    width: '100%',
+  },
+  weekDaysRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 12,
+  },
+  weekDayLabel: {
+    fontSize: 12,
+    color: '#999999',
+    fontWeight: '500',
+    flex: 1,
+    textAlign: 'center',
+  },
+  weekDayLabelToday: {
+    color: '#4A90E2',
+    fontWeight: '600',
+  },
+  progressBar: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 20,
+    padding: 6,
+    height: 44,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    overflow: 'visible',
+  },
+  progressDayContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+  },
+  progressDayFilled: {
+    width: '110%',
+    height: 28,
+    backgroundColor: '#4A90E2',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  progressDayEmpty: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  motivationalBox: {
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  motivationalText: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    textAlign: 'center',
+    fontWeight: '500',
   },
 });

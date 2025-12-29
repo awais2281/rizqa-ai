@@ -3,10 +3,12 @@
     "name": "Rizqa AI",
     "slug": "rizqa-ai",
     "version": "1.0.0",
+    "icon": "./design/ChatGPT Image Dec 28, 2025, 05_00_42 PM.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
-      "backgroundColor": "#ffffff",
+      "image": "./design/Logo design for Rizqa app.png",
+      "backgroundColor": "#0a1628",
       "resizeMode": "contain"
     },
     "assetBundlePatterns": [
@@ -16,18 +18,35 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.rizqaai.app"
+      "bundleIdentifier": "com.rizqaai.app",
+      "buildNumber": "3"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#ffffff"
+        "foregroundImage": "./design/ChatGPT Image Dec 28, 2025, 05_00_42 PM.png",
+        "backgroundColor": "#0a1628"
       },
       "package": "com.rizqaai.app",
+      "versionCode": 3,
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "rizqa",
+              "host": "login-callback"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
       ]
     },
+    "scheme": "rizqa",
     "updates": {
       "enabled": false,
       "checkAutomatically": "NEVER",
@@ -40,7 +59,8 @@
       }
     },
     "plugins": [
-      "expo-audio"
+      "expo-audio",
+      "expo-splash-screen"
     ],
     "owner": "mufctt"
   }

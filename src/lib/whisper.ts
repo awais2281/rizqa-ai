@@ -95,13 +95,13 @@ export class WhisperService {
       for (const fileName of modelFileNames) {
         const checkPath = `${FileSystem.documentDirectory}${fileName}`;
         const fileInfo = await FileSystem.getInfoAsync(checkPath);
-        if (fileInfo.exists) {
+      if (fileInfo.exists) {
           modelFileName = fileName;
           docPath = checkPath;
           this.modelPath = docPath;
-          if (!silent) {
+        if (!silent) {
             console.log(`✓ Model found in document directory: ${fileName}`);
-          }
+        }
           copied = true;
           break;
         }
@@ -118,7 +118,7 @@ export class WhisperService {
         for (const fileName of modelFileNames) {
           modelFileName = fileName;
           docPath = `${FileSystem.documentDirectory}${fileName}`;
-          
+        
           // Method 1: Try Asset API with static require() paths
           // Try pytorch_model.bin first, then ggml-small-q5_1.bin
           if (!silent) {
@@ -157,11 +157,11 @@ export class WhisperService {
               if (!silent) {
                 console.log(`✓ Found model via require() for ${fileName}`);
               }
-              const modelAsset = Asset.fromModule(assetModule);
+          const modelAsset = Asset.fromModule(assetModule);
               
               // Try to download the asset
               try {
-                await modelAsset.downloadAsync();
+          await modelAsset.downloadAsync();
               } catch (downloadError) {
                 if (!silent) {
                   console.log(`Asset download failed (may already be available):`, downloadError instanceof Error ? downloadError.message : String(downloadError));
@@ -169,7 +169,7 @@ export class WhisperService {
                 // Continue - asset might already be available
               }
               
-              if (modelAsset.localUri) {
+          if (modelAsset.localUri) {
                 let sourceUri = modelAsset.localUri;
                 if (!silent) {
                   console.log('Asset localUri:', sourceUri);
@@ -198,21 +198,21 @@ export class WhisperService {
                   
                   // Strategy 2: Try removing file:// prefix
                   let sourcePath = sourceUri;
-                  if (sourcePath.startsWith('file://')) {
-                    sourcePath = sourcePath.slice(7);
+            if (sourcePath.startsWith('file://')) {
+              sourcePath = sourcePath.slice(7);
                   }
                   try {
                     if (!silent) {
                       console.log('Attempting copy with path (no file://):', sourcePath);
-                    }
-                    await FileSystem.copyAsync({
-                      from: sourcePath,
-                      to: docPath,
-                    });
+            }
+            await FileSystem.copyAsync({
+              from: sourcePath,
+              to: docPath,
+            });
                     copySuccess = true;
                     if (!silent) {
                       console.log(`✓ Model copied via Asset API (path) (${fileName})`);
-                    }
+          }
                   } catch (pathError) {
                     if (!silent) {
                       console.log(`Copy with path failed:`, pathError instanceof Error ? pathError.message : String(pathError));
@@ -239,10 +239,10 @@ export class WhisperService {
                       const pathInfo = await FileSystem.getInfoAsync(sourcePath);
                       if (pathInfo.exists) {
                         try {
-                          await FileSystem.copyAsync({
-                            from: sourcePath,
-                            to: docPath,
-                          });
+              await FileSystem.copyAsync({
+                from: sourcePath,
+                to: docPath,
+              });
                           copySuccess = true;
                           if (!silent) {
                             console.log(`✓ Model copied with path after existence check (${fileName})`);
@@ -258,8 +258,8 @@ export class WhisperService {
                 }
                 
                 if (copySuccess) {
-                  this.modelPath = docPath;
-                  copied = true;
+              this.modelPath = docPath;
+              copied = true;
                   break;
                 } else {
                   if (!silent) {
@@ -276,51 +276,51 @@ export class WhisperService {
                 console.log(`Asset API processing failed for ${fileName}:`, assetError instanceof Error ? assetError.message : String(assetError));
               }
               // Continue to bundle paths
-            }
           }
-          
+        }
+        
           // Method 2: Try direct bundle paths (if Asset API failed for this filename)
-          if (!copied) {
+        if (!copied) {
             if (!silent) {
               console.log(`Trying direct bundle paths for ${fileName}...`);
               console.log('Bundle directory:', FileSystem.bundleDirectory);
             }
-            const bundlePaths = [
+          const bundlePaths = [
               `${FileSystem.bundleDirectory}assets/models/${fileName}`,
               `${FileSystem.bundleDirectory}models/${fileName}`,
               `${FileSystem.bundleDirectory}${fileName}`,
-            ];
-            
-            for (const bundlePath of bundlePaths) {
-              try {
+          ];
+          
+          for (const bundlePath of bundlePaths) {
+            try {
                 if (!silent) {
                   console.log('Checking bundle path:', bundlePath);
                 }
-                const bundleInfo = await FileSystem.getInfoAsync(bundlePath);
-                if (bundleInfo.exists) {
+              const bundleInfo = await FileSystem.getInfoAsync(bundlePath);
+              if (bundleInfo.exists) {
                   if (!silent) {
                     console.log('✓ Found model at:', bundlePath);
                   }
-                  await FileSystem.copyAsync({
-                    from: bundlePath,
-                    to: docPath,
-                  });
-                  this.modelPath = docPath;
-                  copied = true;
+                await FileSystem.copyAsync({
+                  from: bundlePath,
+                  to: docPath,
+                });
+                this.modelPath = docPath;
+                copied = true;
                   if (!silent) {
                     console.log(`✓ Model copied from bundle (${fileName})`);
                   }
-                  break;
+                break;
                 } else {
                   if (!silent) {
                     console.log('  Path does not exist');
                   }
-                }
-              } catch (err) {
+              }
+            } catch (err) {
                 if (!silent) {
                   console.log('  Error checking path:', err instanceof Error ? err.message : String(err));
                 }
-                continue;
+              continue;
               }
             }
             
@@ -361,10 +361,10 @@ export class WhisperService {
       // Use the file path (always a string after copying to document directory)
       // Note: whisper.rn requires GGML/GGUF format models, not PyTorch models
       try {
-        this.whisperContext = await initWhisper({
-          filePath: modelPathOrAsset,
-          isBundleAsset: false, // Always false since we copy to document directory
-        });
+      this.whisperContext = await initWhisper({
+        filePath: modelPathOrAsset,
+        isBundleAsset: false, // Always false since we copy to document directory
+      });
       } catch (initError) {
         const initErrorMsg = initError instanceof Error ? initError.message : String(initError);
         
