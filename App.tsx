@@ -19,7 +19,9 @@ import OnboardingScreen2 from './src/screens/OnboardingScreen2';
 import OnboardingScreen3 from './src/screens/OnboardingScreen3';
 import OnboardingScreen4 from './src/screens/OnboardingScreen4';
 import OnboardingLoginScreen from './src/screens/OnboardingLoginScreen';
+import SubscriptionScreen from './src/screens/SubscriptionScreen';
 import { Session } from '@supabase/supabase-js';
+import { initializeRevenueCat, syncUserId } from './src/lib/revenuecat';
 
 const Stack = createNativeStackNavigator();
 
@@ -64,6 +66,7 @@ export default function App() {
     // Check onboarding status and session
     const initializeApp = async () => {
       try {
+        // Load local data first (works offline)
         const onboardingStatus = await AsyncStorage.getItem('onboardingCompleted');
         const isOnboardingCompleted = onboardingStatus === 'true';
         setOnboardingCompleted(isOnboardingCompleted);
@@ -82,16 +85,48 @@ export default function App() {
           setIsTransitioning(true);
         }
 
-        const { data: { session } } = await supabase.auth.getSession();
-      setSession(session);
-      
-      // Mark today as active when app starts (only if logged in)
-      if (session) {
-        markTodayAsActive();
-      }
+        // Try to get session with timeout (works offline with cached session)
+        try {
+          const sessionPromise = supabase.auth.getSession();
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Session check timeout')), 3000)
+          );
+          const { data: { session } } = await Promise.race([sessionPromise, timeoutPromise]) as any;
+          setSession(session);
+          
+          // Mark today as active when app starts (only if logged in)
+          if (session) {
+            markTodayAsActive();
+          }
+        } catch (error) {
+          console.error('Error getting session (may be offline):', error);
+          // Continue with null session - user can still use app offline
+          setSession(null);
+        }
+
+        // Initialize RevenueCat with timeout (non-blocking)
+        Promise.race([
+          initializeRevenueCat(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('RevenueCat timeout')), 5000))
+        ]).catch((error) => {
+          console.error('Error initializing RevenueCat (may be offline):', error);
+          // Continue - RevenueCat will work when online
+        });
+
+        // Sync user ID with RevenueCat (non-blocking, only if we have a session)
+        if (session) {
+          Promise.race([
+            syncUserId(session.user.id),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Sync timeout')), 3000))
+          ]).catch((error) => {
+            console.error('Error syncing RevenueCat user ID (may be offline):', error);
+            // Continue - sync will happen when online
+          });
+        }
       } catch (error) {
         console.error('Error initializing app:', error);
       } finally {
+        // Always set loading to false, even if network calls fail
         setLoading(false);
       }
     };
@@ -119,6 +154,12 @@ export default function App() {
         setOnboardingCompleted(true);
         setStartAtOnboarding4(false); // Clear flag when logging in
         setIsTransitioning(false);
+        // Sync user ID with RevenueCat
+        try {
+          await syncUserId(session.user.id);
+        } catch (error) {
+          console.error('Error syncing RevenueCat user ID:', error);
+        }
       } else {
         // When user signs out, check if we should start at Onboarding4
         const shouldStartAtOnboarding4 = await AsyncStorage.getItem('startAtOnboarding4');
@@ -151,7 +192,7 @@ export default function App() {
     if (!loading && fontsLoaded && onboardingCompleted !== null) {
       const timer = setTimeout(() => {
         setShowSplash(false);
-      }, 2000); // Minimum 2 seconds splash screen
+      }, 3000); // Minimum 3 seconds splash screen
       return () => clearTimeout(timer);
     }
   }, [loading, fontsLoaded, onboardingCompleted]);
@@ -160,13 +201,11 @@ export default function App() {
   if (showSplash) {
     return (
       <View style={styles.splashContainer}>
-        <View style={styles.splashContent}>
-          <Image
-            source={require('./design/Logo design for Rizqa app.png')}
-            style={styles.splashLogo}
-            resizeMode="contain"
-          />
-        </View>
+        <Image
+          source={require('./design/Knowledge Consistency Sucess (1).png')}
+          style={styles.splashImage}
+          resizeMode="cover"
+        />
       </View>
     );
   }
@@ -304,6 +343,20 @@ export default function App() {
                 animationDuration: 200,
               }}
             />
+            <Stack.Screen
+              name="Subscription"
+              component={SubscriptionScreen}
+              options={{
+                animation: 'fade',
+                presentation: 'card',
+                gestureEnabled: true,
+                gestureDirection: 'horizontal',
+                fullScreenGestureEnabled: true,
+                contentStyle: { backgroundColor: '#0F1419' },
+                cardStyle: { backgroundColor: '#0F1419' },
+                animationDuration: 200,
+              }}
+            />
           </>
         ) : onboardingCompleted ? (
           // Onboarding completed but not logged in, show Register/Login screens
@@ -352,23 +405,16 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     height: '100%',
-    backgroundColor: '#0a1628', // Dark blue background matching app icon
+    backgroundColor: '#4A90E2', // Vibrant blue matching RIZQA.png
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
   },
-  splashContent: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+  splashImage: {
     width: '100%',
     height: '100%',
-  },
-  splashLogo: {
-    width: 300,
-    height: 300,
   },
   loadingContainer: {
     flex: 1,

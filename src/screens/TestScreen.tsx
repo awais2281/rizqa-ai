@@ -19,6 +19,9 @@ import { whisperServerService } from '../lib/whisper-server';
 import { extractArabicChunkWords, splitArabicVerseIntoChunks, getChunkString } from '../utils/arabicChunking';
 import { scoreWhisperAgainstChunk, normalizeArabic, tokenizeArabic } from '../utils/recitationScoring';
 import { compareRecitation, calculateExpectedHash } from '../recitation/arabicCompare';
+import { useRevenueCat } from '../hooks/useRevenueCat';
+import RevenueCatUI, { PAYWALL_RESULT } from 'react-native-purchases-ui';
+import { hasActiveEntitlement } from '../lib/revenuecat';
 
 const quranMetadata = require('../../qurandata/indopaknew-data.json');
 const loadingMessagesData = require('../../qurandata/loadingmessages.json');
@@ -58,6 +61,9 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
   const progressAnim = useRef(new Animated.Value(0)).current;
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const messageIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // RevenueCat subscription check
+  const { isPro, refreshCustomerInfo, offering, refreshOfferings, packages } = useRevenueCat();
 
   useEffect(() => {
     loadProgressAndVerse();
@@ -1404,7 +1410,27 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
       console.error('Error processing recording:', error);
       console.error('Error stack:', error instanceof Error ? error.stack : 'No stack');
       
-      if (errorMessage.includes('Model file not found') || 
+      // Check for network-related errors
+      const isNetworkError = errorMessage.includes('network') || 
+                            errorMessage.includes('fetch') || 
+                            errorMessage.includes('connection') ||
+                            errorMessage.includes('timeout') ||
+                            errorMessage.includes('ECONNREFUSED') ||
+                            errorMessage.includes('ENOTFOUND') ||
+                            errorMessage.includes('Failed to fetch') ||
+                            errorMessage.includes('Network request failed') ||
+                            errorMessage.includes('internet connection') ||
+                            errorMessage.includes('No internet');
+      
+      if (isNetworkError) {
+        Alert.alert(
+          'No Internet Connection',
+          'You are currently offline. Whisper transcription requires an internet connection to work.\n\nPlease connect to the internet and try again.'
+        );
+        setTestResult('fail');
+        setTestStatus('FAIL');
+        setTranscribedText('');
+      } else if (errorMessage.includes('Model file not found') || 
           errorMessage.includes('Whisper') || 
           errorMessage.includes('not available')) {
         Alert.alert(
@@ -1598,6 +1624,131 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
   };
 
   const handleStartRecording = async () => {
+    // Check subscription status before allowing recording
+    if (!isPro) {
+      try {
+        // Refresh offerings to ensure we have latest data
+        await refreshOfferings();
+        
+        // Diagnostic logging
+        console.log('=== REVENUECAT PAYWALL DIAGNOSTICS ===');
+        console.log('Offering available:', offering ? 'YES' : 'NO');
+        if (offering) {
+          console.log('Offering identifier:', offering.identifier);
+          console.log('Offering serverDescription:', offering.serverDescription);
+          console.log('Available packages:', offering.availablePackages.length);
+          offering.availablePackages.forEach((pkg, idx) => {
+            console.log(`  Package ${idx + 1}: ${pkg.identifier} - ${pkg.product.title} (${pkg.product.priceString})`);
+          });
+        }
+        console.log('Packages from hook:', packages.length);
+        console.log('RevenueCatUI available:', !!RevenueCatUI);
+        console.log('presentPaywall function:', typeof RevenueCatUI?.presentPaywall);
+        console.log('=====================================');
+        
+        // Check if we have packages
+        if (!offering || packages.length === 0) {
+          console.error('❌ ERROR: No offering or packages available');
+          Alert.alert(
+            'Configuration Error',
+            'Subscription packages are not configured. Please ensure:\n\n1. Products are created in Google Play Console\n2. Products are added to RevenueCat dashboard\n3. Offering is configured with packages\n4. Paywall is created and published in RevenueCat dashboard',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'View Plans',
+                onPress: () => navigation.navigate('Subscription'),
+              },
+            ]
+          );
+          return;
+        }
+
+        // CRITICAL: The paywall MUST be configured in RevenueCat dashboard
+        // If it's not configured, presentPaywall() will hang indefinitely
+        console.log('Attempting to show RevenueCat paywall...');
+        console.log('NOTE: If this hangs, the paywall is NOT configured in RevenueCat dashboard');
+        console.log('Go to: https://app.revenuecat.com → Your Project → Paywalls → Create & Publish a paywall');
+        
+        // Try to show paywall with timeout
+        let timeoutId: NodeJS.Timeout | null = null;
+        const paywallResult = await Promise.race([
+          RevenueCatUI.presentPaywall().then((result) => {
+            // Clear timeout if paywall resolves successfully
+            if (timeoutId) {
+              clearTimeout(timeoutId);
+              timeoutId = null;
+            }
+            return result;
+          }),
+          new Promise<string>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              console.error('❌ PAYWALL TIMEOUT: The paywall is not configured in RevenueCat dashboard');
+              console.error('SOLUTION: Go to RevenueCat dashboard → Paywalls → Create & Publish a paywall');
+              reject(new Error('Paywall timeout - not configured in dashboard'));
+            }, 8000);
+          })
+        ]);
+        
+        console.log('✅ Paywall result received:', paywallResult);
+        
+        // Refresh customer info after paywall
+        await refreshCustomerInfo();
+        const isNowSubscribed = await hasActiveEntitlement();
+        
+        if (paywallResult === PAYWALL_RESULT.PURCHASED || paywallResult === 'PURCHASED' || isNowSubscribed) {
+          Alert.alert(
+            'Success!',
+            'Your subscription has been activated. You can now use the recite feature!',
+            [{ text: 'OK' }]
+          );
+          setIsRecordingFinished(false);
+          await startRecording();
+          return;
+        } else if (paywallResult === PAYWALL_RESULT.CANCELLED || paywallResult === 'CANCELLED') {
+          // User cancelled - do nothing
+          console.log('User cancelled paywall');
+          return;
+        } else if (paywallResult === PAYWALL_RESULT.NOT_PRESENTED || paywallResult === 'NOT_PRESENTED') {
+          console.error('❌ Paywall NOT_PRESENTED: Paywall not configured in RevenueCat dashboard');
+          Alert.alert(
+            'Paywall Not Configured',
+            'The RevenueCat paywall is not configured. Please:\n\n1. Go to RevenueCat dashboard\n2. Navigate to Paywalls\n3. Create and publish a paywall\n4. Assign it to your offering',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'View Plans',
+                onPress: () => navigation.navigate('Subscription'),
+              },
+            ]
+          );
+          return;
+        }
+      } catch (error: any) {
+        // Paywall failed or timed out
+        console.error('❌ PAYWALL ERROR:', error.message);
+        console.error('Full error:', error);
+        
+        // Show detailed error message
+        Alert.alert(
+          'Paywall Configuration Required',
+          `The RevenueCat paywall cannot be displayed.\n\nError: ${error.message}\n\nThis usually means:\n1. Paywall is not created in RevenueCat dashboard\n2. Paywall is not published\n3. Paywall is not assigned to your offering\n\nGo to: https://app.revenuecat.com → Paywalls → Create & Publish`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'View Plans',
+              onPress: () => navigation.navigate('Subscription'),
+            },
+          ]
+        );
+        return;
+      }
+      
+      // Fallback: Navigate to subscription screen
+      navigation.navigate('Subscription');
+      return;
+    }
+    
+    // User is subscribed, proceed with recording
     setIsRecordingFinished(false);
     await startRecording();
   };
