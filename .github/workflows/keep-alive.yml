@@ -1,0 +1,37 @@
+name: Keep-Alive Ping
+
+on:
+  schedule:
+    # Run every 45 minutes during active hours (6 AM - 11 PM UK time)
+    # UK time is GMT/BST (UTC+0/UTC+1)
+    # Active hours: 06:00-23:00 UK time
+    # Schedule in UTC: 05:00-22:00 UTC (GMT) or 04:00-21:00 UTC (BST)
+    # We'll schedule every 45 minutes from 05:00 to 22:00 UTC to cover both GMT and BST
+    # This ensures coverage during UK active hours regardless of daylight saving
+    - cron: '*/45 5-22 * * *'  # Every 45 minutes from 5 AM to 10 PM UTC
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    name: Ping Whisper Server Health Endpoint
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests pytz
+      
+      - name: Ping health endpoint
+        env:
+          WHISPER_SERVER_URL: ${{ secrets.WHISPER_SERVER_URL || 'https://rizqa-ai-production.up.railway.app' }}
+        run: |
+          python server/keep_alive.py
+

@@ -7,7 +7,8 @@ Production inference server for fine-tuned Whisper model (`tarteel-ai/whisper-ti
 - **Model Source**: Hugging Face (`tarteel-ai/whisper-tiny-ar-quran`)
 - **Model Download**: Automatic at server startup (cached on disk)
 - **Inference**: Server-side only (model never sent to client)
-- **Deployment**: Railway (model downloaded at runtime, not in Docker image)
+- **Deployment**: Railway Serverless (scales to zero when idle, wakes on request)
+- **Keep-Alive**: GitHub Actions pings `/health` every 45 minutes during active hours (6 AM - 11 PM UK time)
 
 ## Features
 
@@ -63,14 +64,32 @@ Server will start on `http://localhost:8000`
 
 Model will be downloaded from Hugging Face on first run (cached in `./models_cache/`)
 
-## Railway Deployment
+## Railway Serverless Deployment
 
 1. Push code to GitHub
 2. Deploy on Railway
 3. Set root directory to `server`
-4. Model downloads automatically at startup
+4. Configure Railway service for **serverless/on-demand scaling**:
+   - Enable "Scale to Zero" option in Railway dashboard
+   - Service will automatically wake on incoming requests
+5. Model downloads automatically at startup (cached for faster subsequent starts)
 
 **No environment variables needed** - model ID is hardcoded in the server.
+
+### Keep-Alive System
+
+To prevent cold starts during active hours, a GitHub Actions workflow automatically pings the `/health` endpoint every 45 minutes between 6 AM - 11 PM UK time (GMT/BST).
+
+**Setup:**
+1. The workflow is already configured in `.github/workflows/keep-alive.yml`
+2. Optionally set `WHISPER_SERVER_URL` as a GitHub secret if your server URL differs from the default
+3. The workflow runs automatically on schedule (no manual setup needed)
+
+**Benefits:**
+- Prevents cold starts during peak usage hours
+- Zero cost (GitHub Actions free tier)
+- Automatic timezone handling (GMT/BST)
+- Skips pings outside active hours to save resources
 
 ## Model Details
 
@@ -78,13 +97,21 @@ Model will be downloaded from Hugging Face on first run (cached in `./models_cac
 - **Source**: Hugging Face
 - **Format**: PyTorch (pytorch_model.bin)
 - **Language**: Arabic
-- **Size**: ~150MB (downloaded at runtime)
+- **Size**: ~75MB (downloaded at runtime, smaller than base model for faster cold starts)
 
 ## Performance
 
+### Serverless Cold Starts
+- **Cold Start (first request after idle)**: ~15-25 seconds (with cached model)
+- **Cold Start (first-time download)**: ~45-90 seconds (one-time only)
+- **Warm Requests**: ~2-5 seconds (model already loaded)
+- **Keep-Alive**: Prevents cold starts during active hours (6 AM - 11 PM UK time)
+
+### Model Loading
 - **First Request**: May take longer (model loading)
 - **Subsequent Requests**: Fast (model in memory)
 - **Model Cache**: Persists between restarts (in `models_cache/`)
+- **Tiny Model**: Faster loading than base model (~75MB vs ~150MB)
 
 ## Troubleshooting
 
