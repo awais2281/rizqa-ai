@@ -78,18 +78,20 @@ Model will be downloaded from Hugging Face on first run (cached in `./models_cac
 
 ### Keep-Alive System
 
-To prevent cold starts during active hours, a GitHub Actions workflow automatically pings the `/health` endpoint every 45 minutes between 6 AM - 11 PM UK time (GMT/BST).
+**DISABLED - Serverless Mode**
 
-**Setup:**
-1. The workflow is already configured in `.github/workflows/keep-alive.yml`
-2. Optionally set `WHISPER_SERVER_URL` as a GitHub secret if your server URL differs from the default
-3. The workflow runs automatically on schedule (no manual setup needed)
+The keep-alive system has been **disabled** to allow true serverless scaling. The service will scale to zero when idle and wake automatically on request.
 
-**Benefits:**
-- Prevents cold starts during peak usage hours
-- Zero cost (GitHub Actions free tier)
-- Automatic timezone handling (GMT/BST)
-- Skips pings outside active hours to save resources
+**Previous behavior (now disabled):**
+- GitHub Actions workflow would ping `/health` every 45 minutes
+- This kept the service warm but increased costs
+- **Now disabled** for cost optimization
+
+**Current behavior:**
+- Service scales to zero when idle (no requests for ~5 minutes)
+- Wakes automatically on first request (cold start: ~15-25 seconds)
+- Subsequent requests are fast (model already loaded)
+- **True serverless = pay only when processing**
 
 ## Model Details
 
@@ -105,7 +107,7 @@ To prevent cold starts during active hours, a GitHub Actions workflow automatica
 - **Cold Start (first request after idle)**: ~15-25 seconds (with cached model)
 - **Cold Start (first-time download)**: ~45-90 seconds (one-time only)
 - **Warm Requests**: ~2-5 seconds (model already loaded)
-- **Keep-Alive**: Prevents cold starts during active hours (6 AM - 11 PM UK time)
+- **Serverless**: Service scales to zero when idle (no keep-alive)
 
 ### Model Loading
 - **First Request**: May take longer (model loading)

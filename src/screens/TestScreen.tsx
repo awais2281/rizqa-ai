@@ -61,6 +61,7 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
   const progressAnim = useRef(new Animated.Value(0)).current;
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const messageIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const hideResultsButtonTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // RevenueCat subscription check
   const { isPro, refreshCustomerInfo, offering, refreshOfferings, packages } = useRevenueCat();
@@ -74,6 +75,50 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
   useEffect(() => {
     loadCurrentVerse();
   }, [currentSurah, currentAyah, currentChunkIndex]);
+
+  // Keep "View Results" button visible for 10 seconds after test completion
+  // This effect watches testResult and showResultsModal, but NOT verse changes
+  // This ensures the button stays visible for 10 seconds even after verse changes
+  useEffect(() => {
+    // If there's a test result and the modal is closed, show the button for 10 seconds
+    if (testResult && !showResultsModal) {
+      // Clear any existing timeout before starting a new one
+      if (hideResultsButtonTimeoutRef.current) {
+        clearTimeout(hideResultsButtonTimeoutRef.current);
+        hideResultsButtonTimeoutRef.current = null;
+      }
+      
+      setShowResultsButton(true);
+      
+      // Hide the button and reset test state after 10 seconds
+      hideResultsButtonTimeoutRef.current = setTimeout(() => {
+        console.log('[TestScreen] Hiding results button and resetting state after 10 seconds.');
+        setShowResultsButton(false);
+        // Reset test state after button is hidden
+        setTestResult(null);
+        setTestStatus(null);
+        setTranscribedText('');
+        setWordComparison([]);
+        setSimilarityScore(null);
+        setIsRecordingFinished(false);
+        setCurrentLoadingMessage('');
+        progressAnim.setValue(0);
+        setProgressPercentage(0);
+        hideResultsButtonTimeoutRef.current = null;
+      }, 10000); // 10 seconds
+    } else if (!testResult || showResultsModal) {
+      // If there's no test result or modal is open, hide the button
+      // But DON'T clear the timeout - let it complete if it's running
+      // This ensures the button stays visible even if the verse changes while waiting
+      setShowResultsButton(false);
+    }
+
+    // Cleanup function - only clear timeout on unmount
+    return () => {
+      // Don't clear timeout here - we want it to persist even if component re-renders
+      // The timeout will be cleared when testResult becomes null or when explicitly reset
+    };
+  }, [testResult, showResultsModal]); // Only watch testResult and showResultsModal, NOT verse changes
 
   // Handle loading message sequence and progress bar animation
   useEffect(() => {
@@ -1402,7 +1447,9 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
         // Wait a bit before moving to next chunk/verse
         setTimeout(async () => {
           await moveToNextChunkOrVerse();
-          resetTestState();
+          // Don't reset test state immediately - let the button stay visible for 10 seconds
+          // Only reset the modal state, keep testResult for the button to show
+          setShowResultsModal(false);
         }, 2000);
       }
     } catch (error) {
@@ -1533,6 +1580,12 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
   };
 
   const resetTestState = () => {
+    // Clear any pending timeout for hiding the button
+    if (hideResultsButtonTimeoutRef.current) {
+      clearTimeout(hideResultsButtonTimeoutRef.current);
+      hideResultsButtonTimeoutRef.current = null;
+    }
+    
     setTestResult(null);
     setTestStatus(null);
     setTranscribedText('');
@@ -1793,8 +1846,7 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
             <View style={styles.buttonContainer}>
               {isProcessing ? (
                 <View style={styles.processingContainer}>
-                  {/* Circular Progress Bar */}
-                  <CircularProgressBar progress={progressAnim} />
+                  {/* Loading text only - progress bar removed */}
                   <Text style={styles.processingText}>
                     {currentLoadingMessage || 'Processing...'}
                   </Text>
@@ -1822,7 +1874,11 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
                 style={styles.viewResultsButton}
                 onPress={() => {
                   setShowResultsModal(true);
-                  setShowResultsButton(false); // Hide button when modal opens
+                  // Clear timeout when button is pressed - button will be hidden by useEffect when modal opens
+                  if (hideResultsButtonTimeoutRef.current) {
+                    clearTimeout(hideResultsButtonTimeoutRef.current);
+                    hideResultsButtonTimeoutRef.current = null;
+                  }
                 }}
               >
                 <Text style={styles.viewResultsButtonText}>View Results</Text>
@@ -1977,7 +2033,8 @@ export default function TestScreen({ navigation, route }: TestScreenProps) {
                     onPress={async () => {
                       setShowResultsModal(false);
                       await moveToNextChunkOrVerse();
-                      resetTestState();
+                      // Don't reset test state immediately - let the button stay visible for 10 seconds
+                      // The useEffect will handle showing/hiding the button
                     }}
                   >
                     <Text style={styles.resultsActionButtonText}>Continue to Next</Text>
