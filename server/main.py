@@ -43,6 +43,7 @@ processor = None
 pipe = None  # Cache the pipeline for faster inference
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model_loaded = False
+decoder_start_token_id = None  # Global to store this important ID
 
 # Model configuration
 MODEL_ID = "tarteel-ai/whisper-tiny-ar-quran"  # Tiny model for faster cold starts and lower memory usage
@@ -53,7 +54,7 @@ def download_and_load_model():
     Download model from Hugging Face and load into memory
     Model is cached on disk after first download
     """
-    global model, processor, pipe, model_loaded
+    global model, processor, pipe, model_loaded, decoder_start_token_id
     
     if model_loaded:
         logger.info("Model already loaded")
@@ -113,14 +114,23 @@ def download_and_load_model():
         if decoder_start_token_id is None:
             # Fallback: get from tokenizer if not in config
             decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+            # If still None, use common Whisper default
+            if decoder_start_token_id is None:
+                decoder_start_token_id = 50258  # Common default for Whisper models
         logger.info(f"Decoder start token ID: {decoder_start_token_id}")
         
-        # Create a generation config with required decoder start token
-        # We need to preserve decoder_start_token_id for proper decoder initialization
-        generation_config = GenerationConfig()
+        # Store globally for use in transcribe function
+        globals()['decoder_start_token_id'] = decoder_start_token_id
         
-        # Explicitly set only the parameters we need - do NOT include language
-        # The model is fine-tuned for Arabic, so language is not needed
+        # Use the model's existing generation config as a base (preserves important settings)
+        # Then update only what we need
+        if hasattr(model, 'generation_config') and model.generation_config is not None:
+            generation_config = model.generation_config
+        else:
+            # If no generation config exists, create one from model config
+            generation_config = GenerationConfig.from_model_config(model.config)
+        
+        # Update only the parameters we need - preserve decoder_start_token_id
         generation_config.return_timestamps = False
         generation_config.max_new_tokens = 120
         generation_config.num_beams = 1
@@ -130,8 +140,11 @@ def download_and_load_model():
         generation_config.decoder_start_token_id = decoder_start_token_id  # CRITICAL: Must be set
         
         # Update model's generation config to match
-        if hasattr(model, 'generation_config'):
-            model.generation_config = generation_config
+        model.generation_config = generation_config
+        
+        # Also ensure model.config has it set (some code paths check config directly)
+        if not hasattr(model.config, 'decoder_start_token_id') or model.config.decoder_start_token_id is None:
+            model.config.decoder_start_token_id = decoder_start_token_id
 
         # Prepare generate_kwargs explicitly, excluding language but keeping decoder_start_token_id
         generate_kwargs_dict = {
@@ -469,18 +482,28 @@ async def transcribe_audio(
         logger.info(f"[PERF] Decode/resample time: {decode_resample_time:.3f}s")
         
         # Use cached pipeline (created at startup) for faster inference
-        global pipe
+        global pipe, decoder_start_token_id
         if pipe is None:
-            logger.warning("Pipeline not cached, creating new one...")
+            logger.warning("Pipeline not cached, creating new one during transcribe request...")
             from transformers import pipeline, GenerationConfig
             
-            # Get decoder start token ID (required for decoder initialization)
-            decoder_start_token_id = model.config.decoder_start_token_id
+            # Use global decoder_start_token_id (set during model loading)
             if decoder_start_token_id is None:
-                decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+                # Fallback: get from model config if global not set
+                decoder_start_token_id = model.config.decoder_start_token_id
+                if decoder_start_token_id is None:
+                    decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+                    if decoder_start_token_id is None:
+                        decoder_start_token_id = 50258  # Common default for Whisper
             
-            # Create generation config with decoder start token
-            generation_config = GenerationConfig()
+            # Use the model's existing generation config as a base (preserves important settings)
+            if hasattr(model, 'generation_config') and model.generation_config is not None:
+                generation_config = model.generation_config
+            else:
+                # If no generation config exists, create one from model config
+                generation_config = GenerationConfig.from_model_config(model.config)
+            
+            # Update only what we need - preserve decoder_start_token_id
             generation_config.return_timestamps = False
             generation_config.max_new_tokens = 120
             generation_config.num_beams = 1
@@ -518,10 +541,15 @@ async def transcribe_audio(
         # Fast decoding settings for optimal speed
         inference_start = time.time()
         
-        # Get decoder start token ID (required for decoder initialization)
-        decoder_start_token_id = model.config.decoder_start_token_id
+        # Use global decoder_start_token_id (set during model loading)
+        global decoder_start_token_id
         if decoder_start_token_id is None:
-            decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+            # Fallback: get from model config if global not set
+            decoder_start_token_id = model.config.decoder_start_token_id
+            if decoder_start_token_id is None:
+                decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+                if decoder_start_token_id is None:
+                    decoder_start_token_id = 50258  # Common default for Whisper
         
         # Fast decoding generation kwargs
         # IMPORTANT: Do NOT include 'language' parameter - it causes generation config conflicts
@@ -543,18 +571,32 @@ async def transcribe_audio(
             "return_timestamps": False,
         }
         
-        # Ensure model's generation config has decoder_start_token_id
-        if hasattr(model, 'generation_config'):
-            from transformers import GenerationConfig
-            # Update generation config with decoder start token
-            if not hasattr(model.generation_config, 'decoder_start_token_id') or model.generation_config.decoder_start_token_id is None:
-                model.generation_config.decoder_start_token_id = decoder_start_token_id
+        # Ensure model's generation config has decoder_start_token_id set correctly
+        # Use the existing generation config, don't create a fresh one
+        if hasattr(model, 'generation_config') and model.generation_config is not None:
+            # Update only what we need, preserve everything else
+            model.generation_config.decoder_start_token_id = decoder_start_token_id
             model.generation_config.return_timestamps = False
             model.generation_config.max_new_tokens = 120
             model.generation_config.num_beams = 1
             model.generation_config.do_sample = False
             model.generation_config.temperature = None
             model.generation_config.use_cache = True
+        else:
+            # If no generation config exists, create one from model config (preserves important settings)
+            from transformers import GenerationConfig
+            model.generation_config = GenerationConfig.from_model_config(model.config)
+            model.generation_config.decoder_start_token_id = decoder_start_token_id
+            model.generation_config.return_timestamps = False
+            model.generation_config.max_new_tokens = 120
+            model.generation_config.num_beams = 1
+            model.generation_config.do_sample = False
+            model.generation_config.temperature = None
+            model.generation_config.use_cache = True
+        
+        # Also ensure model.config has it set (some code paths check config directly)
+        if not hasattr(model.config, 'decoder_start_token_id') or model.config.decoder_start_token_id is None:
+            model.config.decoder_start_token_id = decoder_start_token_id
         
         # Use preprocessed audio array directly (more reliable than file path)
         # Do NOT pass language parameter - the model is fine-tuned for Arabic
