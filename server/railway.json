@@ -9,7 +9,7 @@
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   },
-  "$comment": "Serverless mode: Configure in Railway dashboard to use serverless/on-demand scaling. The service will scale to zero when idle and wake on request."
+  "$comment": "Serverless deployment: Configure in Railway dashboard Settings to enable Serverless mode (not Scale to Zero). This provides true serverless behavior with automatic scaling."
 }
 
 
