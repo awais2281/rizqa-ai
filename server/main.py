@@ -270,7 +270,14 @@ async def transcribe_audio(
         
         # Load audio with librosa (handles various formats)
         decode_resample_start = time.time()
-        audio_array, original_sr = librosa.load(tmp_file_path, sr=None, mono=True)
+        try:
+            audio_array, original_sr = librosa.load(tmp_file_path, sr=None, mono=True)
+        except Exception as e:
+            logger.error(f"Failed to load audio with librosa: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load audio file: {str(e)}. File may be corrupted or in an unsupported format."
+            )
         
         # Validate audio was loaded successfully
         if audio_array is None or len(audio_array) == 0:
@@ -280,6 +287,17 @@ async def transcribe_audio(
             )
         
         logger.info(f"Loaded audio: {len(audio_array)} samples at {original_sr}Hz")
+        
+        # Check if audio has actual signal (not all zeros)
+        audio_max = np.abs(audio_array).max()
+        if audio_max == 0:
+            logger.warning("Audio file contains only silence (all zeros)")
+            raise HTTPException(
+                status_code=400,
+                detail="Audio file contains only silence. Please ensure you recorded actual speech."
+            )
+        
+        logger.info(f"Audio signal level: max={audio_max:.6f}, mean={np.abs(audio_array).mean():.6f}")
         
         # Resample to 16kHz if needed (Whisper requirement)
         if original_sr != 16000:
@@ -309,40 +327,60 @@ async def transcribe_audio(
             audio_array = np.zeros(min_samples)
         
         # VAD (Voice Activity Detection) filter - remove silence at start and end
-        # Use faster RMS-based detection with larger frames
-        frame_length = 4096  # Larger frames for faster processing
-        hop_length = 2048   # Larger hops for speed
-        threshold_db = -35  # Slightly higher threshold for faster detection
+        # Use less aggressive settings to avoid removing valid audio
+        frame_length = 2048  # Smaller frames for better detection
+        hop_length = 512     # Smaller hops for precision
+        threshold_db = -40  # Lower threshold to be less aggressive (more permissive)
         
-        # Only perform VAD if audio is long enough
-        if len(audio_array) > frame_length:
-            # Calculate energy (faster with larger frames)
-            energy = librosa.feature.rms(y=audio_array, frame_length=frame_length, hop_length=hop_length)[0]
-            energy_db = librosa.power_to_db(energy**2, ref=np.max)
-            
-            # Find non-silent frames
-            non_silent_frames = np.where(energy_db > threshold_db)[0]
-            
-            if len(non_silent_frames) > 0:
-                # Convert frame indices to sample indices
-                start_frame = non_silent_frames[0]
-                end_frame = non_silent_frames[-1]
-                start_sample = start_frame * hop_length
-                end_sample = min((end_frame + 1) * hop_length, len(audio_array))
-                
-                # Trim silence
-                audio_array = audio_array[start_sample:end_sample]
-                logger.info(f"Trimmed silence: {len(audio_array)} samples remaining")
-            else:
-                logger.warning("No non-silent frames found, keeping original audio")
+        # Only perform VAD if audio is long enough (at least 1 second)
+        min_samples_for_vad = int(16000 * 1.0)  # 1 second at 16kHz
+        if len(audio_array) > min_samples_for_vad:
+            try:
+                # Calculate energy
+                energy = librosa.feature.rms(y=audio_array, frame_length=frame_length, hop_length=hop_length)[0]
+                if len(energy) > 0:
+                    energy_db = librosa.power_to_db(energy**2 + 1e-10, ref=np.max)  # Add small epsilon to avoid log(0)
+                    
+                    # Find non-silent frames (more permissive threshold)
+                    non_silent_frames = np.where(energy_db > threshold_db)[0]
+                    
+                    if len(non_silent_frames) > 0:
+                        # Convert frame indices to sample indices
+                        start_frame = non_silent_frames[0]
+                        end_frame = non_silent_frames[-1]
+                        start_sample = max(0, start_frame * hop_length - hop_length)  # Add small buffer
+                        end_sample = min(len(audio_array), (end_frame + 1) * hop_length + hop_length)  # Add small buffer
+                        
+                        # Only trim if we're removing a significant amount (at least 10% of audio)
+                        trim_ratio = (len(audio_array) - (end_sample - start_sample)) / len(audio_array)
+                        if trim_ratio > 0.1:  # Only trim if removing more than 10%
+                            audio_array = audio_array[start_sample:end_sample]
+                            logger.info(f"Trimmed silence: {len(audio_array)} samples remaining (removed {trim_ratio*100:.1f}%)")
+                        else:
+                            logger.info(f"Silence trimming would remove only {trim_ratio*100:.1f}%, keeping full audio")
+                    else:
+                        logger.warning("No non-silent frames found, but keeping original audio (VAD may be too strict)")
+                else:
+                    logger.warning("Could not calculate energy for VAD, keeping original audio")
+            except Exception as e:
+                logger.warning(f"VAD processing failed: {e}, keeping original audio")
         else:
-            logger.info(f"Audio too short for VAD ({len(audio_array)} samples), skipping silence trimming")
+            logger.info(f"Audio too short for VAD ({len(audio_array)} samples, need {min_samples_for_vad}), skipping silence trimming")
         
         # Validate audio array is not empty after trimming
         if len(audio_array) == 0:
             raise HTTPException(
                 status_code=400,
-                detail="Audio file is empty after silence trimming."
+                detail="Audio file is empty after processing. This should not happen - please report this error."
+            )
+        
+        # Final check: ensure audio still has signal after processing
+        audio_max_after = np.abs(audio_array).max()
+        if audio_max_after == 0:
+            logger.error("Audio signal became zero after processing")
+            raise HTTPException(
+                status_code=400,
+                detail="Audio signal became invalid during processing. Please try recording again."
             )
         
         # Ensure minimum length (at least 0.5 seconds)
@@ -359,7 +397,18 @@ async def transcribe_audio(
                 detail="Audio array is empty after preprocessing."
             )
         
-        logger.info(f"Final audio array: {len(audio_array)} samples, max={np.abs(audio_array).max():.4f}, min={np.abs(audio_array).min():.4f}")
+        logger.info(f"Final audio array: {len(audio_array)} samples, max={np.abs(audio_array).max():.4f}, min={np.abs(audio_array).min():.4f}, mean={np.abs(audio_array).mean():.4f}")
+        
+        # Final validation: ensure audio has meaningful content
+        audio_rms = np.sqrt(np.mean(audio_array**2))
+        if audio_rms < 1e-6:  # Very low RMS indicates silence or near-silence
+            logger.error(f"Audio RMS too low: {audio_rms:.8f}, indicating silence or corrupted audio")
+            raise HTTPException(
+                status_code=400,
+                detail="Audio appears to be silent or corrupted. Please ensure you recorded actual speech with sufficient volume."
+            )
+        
+        logger.info(f"Audio RMS: {audio_rms:.6f} (should be > 0.001 for valid speech)")
         
         # Save preprocessed audio to temporary file
         preprocessed_path = tmp_file_path.replace(file_ext, '_preprocessed.wav')
@@ -553,10 +602,18 @@ async def transcribe_audio(
         except ValueError as e:
             error_msg = str(e)
             logger.error(f"ValueError in pipeline: {e}", exc_info=True)
-            if "torch.cat" in error_msg or "non-empty list" in error_msg:
+            logger.error(f"Preprocessed file info: path={preprocessed_path}, exists={os.path.exists(preprocessed_path) if preprocessed_path else False}, size={os.path.getsize(preprocessed_path) if preprocessed_path and os.path.exists(preprocessed_path) else 0}")
+            if "torch.cat" in error_msg or "non-empty list" in error_msg or "empty" in error_msg.lower():
+                # Try to read the preprocessed file to verify it's valid
+                try:
+                    test_audio, test_sr = librosa.load(preprocessed_path, sr=None, mono=True)
+                    logger.error(f"Preprocessed file validation: {len(test_audio)} samples at {test_sr}Hz, max={np.abs(test_audio).max() if len(test_audio) > 0 else 0}")
+                except Exception as read_err:
+                    logger.error(f"Failed to read preprocessed file for validation: {read_err}")
+                
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Audio processing failed: The audio file may be empty or corrupted. Please ensure the audio contains valid speech."
+                    detail=f"Audio processing failed: The audio file may be empty or corrupted. Please ensure the audio contains valid speech. Error: {error_msg[:200]}"
                 )
             else:
                 raise HTTPException(
@@ -567,10 +624,18 @@ async def transcribe_audio(
             error_msg = str(e)
             error_type = type(e).__name__
             logger.error(f"Pipeline inference error ({error_type}): {e}", exc_info=True)
-            if "torch.cat" in error_msg or "non-empty list" in error_msg:
+            logger.error(f"Preprocessed file info: path={preprocessed_path}, exists={os.path.exists(preprocessed_path) if preprocessed_path else False}, size={os.path.getsize(preprocessed_path) if preprocessed_path and os.path.exists(preprocessed_path) else 0}")
+            if "torch.cat" in error_msg or "non-empty list" in error_msg or "empty" in error_msg.lower():
+                # Try to read the preprocessed file to verify it's valid
+                try:
+                    test_audio, test_sr = librosa.load(preprocessed_path, sr=None, mono=True)
+                    logger.error(f"Preprocessed file validation: {len(test_audio)} samples at {test_sr}Hz, max={np.abs(test_audio).max() if len(test_audio) > 0 else 0}")
+                except Exception as read_err:
+                    logger.error(f"Failed to read preprocessed file for validation: {read_err}")
+                
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Audio processing failed: The audio file may be empty or corrupted. Please ensure the audio contains valid speech."
+                    detail=f"Audio processing failed: The audio file may be empty or corrupted. Please ensure the audio contains valid speech. Error: {error_msg[:200]}"
                 )
             else:
                 raise HTTPException(
