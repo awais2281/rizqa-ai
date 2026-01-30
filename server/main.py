@@ -541,8 +541,7 @@ async def transcribe_audio(
         # Fast decoding settings for optimal speed
         inference_start = time.time()
         
-        # Use global decoder_start_token_id (set during model loading)
-        global decoder_start_token_id
+        # Use global decoder_start_token_id (already declared on line 485)
         if decoder_start_token_id is None:
             # Fallback: get from model config if global not set
             decoder_start_token_id = model.config.decoder_start_token_id
