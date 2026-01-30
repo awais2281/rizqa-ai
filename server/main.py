@@ -380,9 +380,9 @@ async def transcribe_audio(
         }
         
         # Pipeline parameters - explicitly do NOT pass language
+        # Note: condition_on_previous_text is not supported in transformers 4.40.0
         pipeline_kwargs = {
             "return_timestamps": False,
-            "condition_on_previous_text": False,
         }
         
         # Ensure model's generation config is fresh and doesn't have language conflicts
