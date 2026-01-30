@@ -132,7 +132,7 @@ def download_and_load_model():
         
         # Update only the parameters we need - preserve decoder_start_token_id
         generation_config.return_timestamps = False
-        generation_config.max_new_tokens = 120
+        generation_config.max_new_tokens = 70
         generation_config.num_beams = 1
         generation_config.do_sample = False
         generation_config.temperature = None
@@ -148,7 +148,7 @@ def download_and_load_model():
 
         # Prepare generate_kwargs explicitly, excluding language but keeping decoder_start_token_id
         generate_kwargs_dict = {
-            "max_new_tokens": 120,
+            "max_new_tokens": 70,
             "num_beams": 1,
             "do_sample": False,
             "temperature": None,
@@ -281,203 +281,47 @@ async def transcribe_audio(
         import numpy as np
         from scipy.io import wavfile
         
-        logger.info("Preprocessing audio...")
+        logger.info("Processing audio (minimal preprocessing for cost optimization)...")
         
-        # Load audio with librosa (handles various formats)
+        # Load audio with librosa (handles various formats) - NECESSARY
         decode_resample_start = time.time()
         try:
             audio_array, original_sr = librosa.load(tmp_file_path, sr=None, mono=True)
         except Exception as e:
-            logger.error(f"Failed to load audio with librosa: {e}", exc_info=True)
+            logger.error(f"Failed to load audio: {e}")
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to load audio file: {str(e)}. File may be corrupted or in an unsupported format."
+                detail=f"Failed to load audio file: {str(e)}"
             )
         
-        # Validate audio was loaded successfully
-        if audio_array is None or len(audio_array) == 0:
+        # Basic validation - NECESSARY
+        if len(audio_array) == 0:
             raise HTTPException(
                 status_code=400,
-                detail="Failed to load audio file. File may be corrupted or empty."
+                detail="Audio file is empty."
             )
         
-        logger.info(f"Loaded audio: {len(audio_array)} samples at {original_sr}Hz")
-        
-        # Check if audio has actual signal (not all zeros)
-        audio_max = np.abs(audio_array).max()
-        if audio_max == 0:
-            logger.warning("Audio file contains only silence (all zeros)")
-            raise HTTPException(
-                status_code=400,
-                detail="Audio file contains only silence. Please ensure you recorded actual speech."
-            )
-        
-        logger.info(f"Audio signal level: max={audio_max:.6f}, mean={np.abs(audio_array).mean():.6f}")
-        
-        # Resample to 16kHz if needed (Whisper requirement)
+        # Resample to 16kHz if needed (Whisper requirement) - NECESSARY
         if original_sr != 16000:
-            logger.info(f"Resampling from {original_sr}Hz to 16000Hz")
             audio_array = librosa.resample(audio_array, orig_sr=original_sr, target_sr=16000)
-            logger.info(f"Resampled audio: {len(audio_array)} samples at 16kHz")
         
-        # Validate audio array is not empty after resampling
-        if len(audio_array) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Audio file is empty after processing."
-            )
-        
-        # Normalize audio to prevent clipping and improve quality
+        # Basic normalization to prevent clipping - NECESSARY
         max_val = np.abs(audio_array).max()
-        if max_val > 0:
-            # Normalize to [-1, 1] range, but avoid over-amplification
-            if max_val < 1.0:
-                audio_array = audio_array / max_val * 0.95  # Scale to 95% to avoid clipping
-            else:
-                audio_array = audio_array / max_val * 0.95
-        else:
-            # Audio is completely silent - pad with minimum length
-            logger.warning("Audio is completely silent, padding to minimum length")
-            min_samples = int(16000 * 0.5)  # 0.5 seconds at 16kHz
-            audio_array = np.zeros(min_samples)
+        if max_val > 0 and max_val > 1.0:
+            audio_array = audio_array / max_val * 0.95  # Prevent clipping
         
-        # VAD (Voice Activity Detection) filter - remove silence at start and end
-        # Use less aggressive settings to avoid removing valid audio
-        frame_length = 2048  # Smaller frames for better detection
-        hop_length = 512     # Smaller hops for precision
-        threshold_db = -40  # Lower threshold to be less aggressive (more permissive)
-        
-        # Only perform VAD if audio is long enough (at least 1 second)
-        min_samples_for_vad = int(16000 * 1.0)  # 1 second at 16kHz
-        if len(audio_array) > min_samples_for_vad:
-            try:
-                # Calculate energy
-                energy = librosa.feature.rms(y=audio_array, frame_length=frame_length, hop_length=hop_length)[0]
-                if len(energy) > 0:
-                    energy_db = librosa.power_to_db(energy**2 + 1e-10, ref=np.max)  # Add small epsilon to avoid log(0)
-                    
-                    # Find non-silent frames (more permissive threshold)
-                    non_silent_frames = np.where(energy_db > threshold_db)[0]
-                    
-                    if len(non_silent_frames) > 0:
-                        # Convert frame indices to sample indices
-                        start_frame = non_silent_frames[0]
-                        end_frame = non_silent_frames[-1]
-                        start_sample = max(0, start_frame * hop_length - hop_length)  # Add small buffer
-                        end_sample = min(len(audio_array), (end_frame + 1) * hop_length + hop_length)  # Add small buffer
-                        
-                        # Only trim if we're removing a significant amount (at least 10% of audio)
-                        trim_ratio = (len(audio_array) - (end_sample - start_sample)) / len(audio_array)
-                        if trim_ratio > 0.1:  # Only trim if removing more than 10%
-                            audio_array = audio_array[start_sample:end_sample]
-                            logger.info(f"Trimmed silence: {len(audio_array)} samples remaining (removed {trim_ratio*100:.1f}%)")
-                        else:
-                            logger.info(f"Silence trimming would remove only {trim_ratio*100:.1f}%, keeping full audio")
-                    else:
-                        logger.warning("No non-silent frames found, but keeping original audio (VAD may be too strict)")
-                else:
-                    logger.warning("Could not calculate energy for VAD, keeping original audio")
-            except Exception as e:
-                logger.warning(f"VAD processing failed: {e}, keeping original audio")
-        else:
-            logger.info(f"Audio too short for VAD ({len(audio_array)} samples, need {min_samples_for_vad}), skipping silence trimming")
-        
-        # Validate audio array is not empty after trimming
-        if len(audio_array) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Audio file is empty after processing. This should not happen - please report this error."
-            )
-        
-        # Final check: ensure audio still has signal after processing
-        audio_max_after = np.abs(audio_array).max()
-        if audio_max_after == 0:
-            logger.error("Audio signal became zero after processing")
-            raise HTTPException(
-                status_code=400,
-                detail="Audio signal became invalid during processing. Please try recording again."
-            )
-        
-        # Ensure minimum length (at least 0.5 seconds)
-        min_samples = int(16000 * 0.5)  # 0.5 seconds at 16kHz
+        # Ensure minimum length (0.5 seconds) - NECESSARY for Whisper
+        min_samples = int(16000 * 0.5)
         if len(audio_array) < min_samples:
-            logger.warning(f"Audio too short ({len(audio_array)} samples), padding to minimum")
             padding = np.zeros(min_samples - len(audio_array))
             audio_array = np.concatenate([padding, audio_array])
         
-        # Final validation before saving
-        if len(audio_array) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Audio array is empty after preprocessing."
-            )
-        
-        logger.info(f"Final audio array: {len(audio_array)} samples, max={np.abs(audio_array).max():.4f}, min={np.abs(audio_array).min():.4f}, mean={np.abs(audio_array).mean():.4f}")
-        
-        # Final validation: ensure audio has meaningful content
-        audio_rms = np.sqrt(np.mean(audio_array**2))
-        if audio_rms < 1e-6:  # Very low RMS indicates silence or near-silence
-            logger.error(f"Audio RMS too low: {audio_rms:.8f}, indicating silence or corrupted audio")
-            raise HTTPException(
-                status_code=400,
-                detail="Audio appears to be silent or corrupted. Please ensure you recorded actual speech with sufficient volume."
-            )
-        
-        logger.info(f"Audio RMS: {audio_rms:.6f} (should be > 0.001 for valid speech)")
-        
-        # Save preprocessed audio to temporary file
+        # Save preprocessed audio - NECESSARY
         preprocessed_path = tmp_file_path.replace(file_ext, '_preprocessed.wav')
-        
-        # Ensure audio array is valid before writing
-        if len(audio_array) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot save empty audio array."
-            )
-        
-        # Convert to int16 format for WAV file
         audio_int16 = (audio_array * 32767).astype(np.int16)
-        
-        # Validate conversion
-        if len(audio_int16) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Audio conversion to int16 failed."
-            )
-        
         wavfile.write(preprocessed_path, 16000, audio_int16)
         
-        # Verify file was created and has content
-        if not os.path.exists(preprocessed_path):
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to save preprocessed audio file."
-            )
-        
-        file_size = os.path.getsize(preprocessed_path)
-        if file_size == 0:
-            raise HTTPException(
-                status_code=500,
-                detail="Preprocessed audio file is empty."
-            )
-        
-        # Verify the file can be read back (sanity check)
-        try:
-            test_audio, test_sr = librosa.load(preprocessed_path, sr=None, mono=True)
-            if len(test_audio) == 0:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Preprocessed audio file cannot be read or is empty."
-                )
-            logger.info(f"Verified preprocessed file: {len(test_audio)} samples at {test_sr}Hz")
-        except Exception as e:
-            logger.error(f"Failed to verify preprocessed audio file: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Preprocessed audio file is corrupted: {str(e)}"
-            )
-        
-        logger.info(f"Preprocessed audio saved: {len(audio_array)} samples at 16kHz ({file_size} bytes)")
+        logger.info(f"Audio processed: {len(audio_array)} samples at 16kHz")
         decode_resample_time = time.time() - decode_resample_start
         logger.info(f"[PERF] Decode/resample time: {decode_resample_time:.3f}s")
         
@@ -505,7 +349,7 @@ async def transcribe_audio(
             
             # Update only what we need - preserve decoder_start_token_id
             generation_config.return_timestamps = False
-            generation_config.max_new_tokens = 120
+            generation_config.max_new_tokens = 70
             generation_config.num_beams = 1
             generation_config.do_sample = False
             generation_config.temperature = None
@@ -514,7 +358,7 @@ async def transcribe_audio(
             
             # Prepare explicit generate_kwargs with decoder_start_token_id
             generate_kwargs_dict = {
-                "max_new_tokens": 120,
+                "max_new_tokens": 70,
                 "num_beams": 1,
                 "do_sample": False,
                 "temperature": None,
@@ -555,7 +399,7 @@ async def transcribe_audio(
         # The model is fine-tuned for Arabic, so language specification is not needed
         # CRITICAL: Must include decoder_start_token_id for proper decoder initialization
         generate_kwargs = {
-            "max_new_tokens": 120,
+            "max_new_tokens": 70,
             "num_beams": 1,
             "do_sample": False,
             "temperature": None,
@@ -576,7 +420,7 @@ async def transcribe_audio(
             # Update only what we need, preserve everything else
             model.generation_config.decoder_start_token_id = decoder_start_token_id
             model.generation_config.return_timestamps = False
-            model.generation_config.max_new_tokens = 120
+            model.generation_config.max_new_tokens = 70
             model.generation_config.num_beams = 1
             model.generation_config.do_sample = False
             model.generation_config.temperature = None
@@ -587,7 +431,7 @@ async def transcribe_audio(
             model.generation_config = GenerationConfig.from_model_config(model.config)
             model.generation_config.decoder_start_token_id = decoder_start_token_id
             model.generation_config.return_timestamps = False
-            model.generation_config.max_new_tokens = 120
+            model.generation_config.max_new_tokens = 70
             model.generation_config.num_beams = 1
             model.generation_config.do_sample = False
             model.generation_config.temperature = None
