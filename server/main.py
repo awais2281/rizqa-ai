@@ -397,6 +397,22 @@ async def transcribe_audio(
                 detail="Preprocessed audio file is empty."
             )
         
+        # Verify the file can be read back (sanity check)
+        try:
+            test_audio, test_sr = librosa.load(preprocessed_path, sr=None, mono=True)
+            if len(test_audio) == 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Preprocessed audio file cannot be read or is empty."
+                )
+            logger.info(f"Verified preprocessed file: {len(test_audio)} samples at {test_sr}Hz")
+        except Exception as e:
+            logger.error(f"Failed to verify preprocessed audio file: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Preprocessed audio file is corrupted: {str(e)}"
+            )
+        
         logger.info(f"Preprocessed audio saved: {len(audio_array)} samples at 16kHz ({file_size} bytes)")
         decode_resample_time = time.time() - decode_resample_start
         logger.info(f"[PERF] Decode/resample time: {decode_resample_time:.3f}s")
@@ -492,12 +508,25 @@ async def transcribe_audio(
                 )
             
             logger.info(f"Calling pipeline with preprocessed file: {preprocessed_path} ({file_size} bytes)")
+            logger.info(f"Pipeline type: {type(pipe)}")
+            logger.info(f"Generate kwargs: {generate_kwargs}")
+            logger.info(f"Pipeline kwargs: {pipeline_kwargs}")
+            
+            # Ensure pipeline is not None
+            if pipe is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Pipeline not initialized. Model may not be loaded correctly."
+                )
             
             result = pipe(
                 preprocessed_path,
                 generate_kwargs=generate_kwargs,
                 **pipeline_kwargs
             )
+            
+            logger.info(f"Pipeline result type: {type(result)}")
+            logger.info(f"Pipeline result: {result}")
             
             # Validate result
             if result is None:
@@ -506,19 +535,24 @@ async def transcribe_audio(
                     detail="Pipeline returned None result."
                 )
             
+            # Check if result is a dict with 'text' key
+            if not isinstance(result, dict):
+                logger.warning(f"Pipeline returned unexpected type: {type(result)}, value: {result}")
+                # Try to convert to dict if it's a string
+                if isinstance(result, str):
+                    result = {"text": result}
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Pipeline returned unexpected result type: {type(result)}"
+                    )
+            
+        except HTTPException:
+            # Re-raise HTTPExceptions without modification
+            raise
         except ValueError as e:
             error_msg = str(e)
-            if "torch.cat" in error_msg or "non-empty list" in error_msg:
-                logger.error(f"Empty tensor error in pipeline: {e}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Audio processing failed: The audio file may be empty or corrupted. Please ensure the audio contains valid speech."
-                )
-            else:
-                raise
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Pipeline inference error: {e}", exc_info=True)
+            logger.error(f"ValueError in pipeline: {e}", exc_info=True)
             if "torch.cat" in error_msg or "non-empty list" in error_msg:
                 raise HTTPException(
                     status_code=400,
@@ -527,7 +561,21 @@ async def transcribe_audio(
             else:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Transcription failed during inference: {str(e)}"
+                    detail=f"Transcription failed: {error_msg}"
+                )
+        except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.error(f"Pipeline inference error ({error_type}): {e}", exc_info=True)
+            if "torch.cat" in error_msg or "non-empty list" in error_msg:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio processing failed: The audio file may be empty or corrupted. Please ensure the audio contains valid speech."
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Transcription failed during inference ({error_type}): {error_msg}"
                 )
         
         inference_time = time.time() - inference_start
@@ -572,11 +620,18 @@ async def transcribe_audio(
             }
         })
         
+    except HTTPException:
+        # Re-raise HTTPExceptions without modification
+        raise
     except Exception as e:
         logger.error(f"Transcription error: {e}", exc_info=True)
+        # Provide more detailed error information
+        error_detail = str(e)
+        if not error_detail:
+            error_detail = "Unknown error occurred during transcription"
         raise HTTPException(
             status_code=500,
-            detail=f"Transcription failed: {str(e)}"
+            detail=f"Transcription failed: {error_detail}"
         )
     finally:
         # Clean up temporary files
