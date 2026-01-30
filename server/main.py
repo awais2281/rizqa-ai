@@ -276,54 +276,41 @@ async def transcribe_audio(
         logger.info(f"Transcribing audio: {file.filename} ({len(content)} bytes)")
         logger.info(f"[PERF] Upload read time: {upload_read_time:.3f}s")
         
-        # Audio preprocessing for better accuracy
+        # Minimal audio processing
         import librosa
         import numpy as np
-        from scipy.io import wavfile
         
-        logger.info("Processing audio (minimal preprocessing for cost optimization)...")
-        
-        # Load audio with librosa (handles various formats) - NECESSARY
+        # Minimal audio processing for cost optimization
         decode_resample_start = time.time()
+        import librosa
+        import numpy as np
+        
+        # Load audio (librosa handles various formats) - NECESSARY
         try:
-            audio_array, original_sr = librosa.load(tmp_file_path, sr=None, mono=True)
+            audio_array, original_sr = librosa.load(tmp_file_path, sr=16000, mono=True)  # Load directly at 16kHz to skip resample step
         except Exception as e:
-            logger.error(f"Failed to load audio: {e}")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to load audio file: {str(e)}"
-            )
+            raise HTTPException(status_code=400, detail=f"Failed to load audio: {str(e)}")
         
-        # Basic validation - NECESSARY
+        # Basic validation
         if len(audio_array) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Audio file is empty."
-            )
+            raise HTTPException(status_code=400, detail="Audio file is empty")
         
-        # Resample to 16kHz if needed (Whisper requirement) - NECESSARY
-        if original_sr != 16000:
-            audio_array = librosa.resample(audio_array, orig_sr=original_sr, target_sr=16000)
-        
-        # Basic normalization to prevent clipping - NECESSARY
+        # Simple normalization (only if needed to prevent clipping)
         max_val = np.abs(audio_array).max()
-        if max_val > 0 and max_val > 1.0:
-            audio_array = audio_array / max_val * 0.95  # Prevent clipping
+        if max_val > 1.0:
+            audio_array = audio_array / max_val * 0.95
         
-        # Ensure minimum length (0.5 seconds) - NECESSARY for Whisper
+        # Ensure minimum length (0.5s) - Whisper requirement
         min_samples = int(16000 * 0.5)
         if len(audio_array) < min_samples:
-            padding = np.zeros(min_samples - len(audio_array))
-            audio_array = np.concatenate([padding, audio_array])
+            audio_array = np.pad(audio_array, (0, min_samples - len(audio_array)), mode='constant')
         
-        # Save preprocessed audio - NECESSARY
-        preprocessed_path = tmp_file_path.replace(file_ext, '_preprocessed.wav')
-        audio_int16 = (audio_array * 32767).astype(np.int16)
-        wavfile.write(preprocessed_path, 16000, audio_int16)
+        # Convert to float32 (required by pipeline)
+        audio_array = audio_array.astype(np.float32)
         
-        logger.info(f"Audio processed: {len(audio_array)} samples at 16kHz")
+        # Only create preprocessed file if needed (lazy - only if array fails)
+        preprocessed_path = None
         decode_resample_time = time.time() - decode_resample_start
-        logger.info(f"[PERF] Decode/resample time: {decode_resample_time:.3f}s")
         
         # Use cached pipeline (created at startup) for faster inference
         global pipe, decoder_start_token_id
@@ -444,37 +431,9 @@ async def transcribe_audio(
         # Use preprocessed audio array directly (more reliable than file path)
         # Do NOT pass language parameter - the model is fine-tuned for Arabic
         try:
-            # Ensure audio array is in correct format for pipeline (float32, normalized)
-            if audio_array.dtype != np.float32:
-                logger.info(f"Converting audio array from {audio_array.dtype} to float32")
-                audio_array = audio_array.astype(np.float32)
+            # Audio array is already in correct format (float32, normalized)
             
-            # Ensure audio is properly normalized to [-1, 1] range
-            audio_max = np.abs(audio_array).max()
-            if audio_max > 1.0:
-                logger.warning(f"Audio exceeds [-1, 1] range (max={audio_max:.6f}), re-normalizing")
-                audio_array = audio_array / audio_max * 0.95
-            
-            # Log detailed audio array information before inference
-            logger.info(f"Audio array ready for inference:")
-            logger.info(f"  - Shape: {audio_array.shape}")
-            logger.info(f"  - Dtype: {audio_array.dtype}")
-            logger.info(f"  - Min: {audio_array.min():.6f}, Max: {audio_array.max():.6f}")
-            logger.info(f"  - Mean: {audio_array.mean():.6f}, Std: {audio_array.std():.6f}")
-            logger.info(f"  - RMS: {np.sqrt(np.mean(audio_array**2)):.6f}")
-            logger.info(f"  - Non-zero samples: {np.count_nonzero(audio_array)} / {len(audio_array)}")
-            logger.info(f"  - Duration: {len(audio_array) / 16000:.2f} seconds")
-            
-            # Verify preprocessed file still exists and is valid (for backup/debugging)
-            if not os.path.exists(preprocessed_path):
-                logger.warning(f"Preprocessed file not found: {preprocessed_path}, but audio array is valid")
-            else:
-                file_size = os.path.getsize(preprocessed_path)
-                logger.info(f"Preprocessed file exists: {preprocessed_path} ({file_size} bytes)")
-            
-            logger.info(f"Pipeline type: {type(pipe)}")
-            logger.info(f"Generate kwargs: {generate_kwargs}")
-            logger.info(f"Pipeline kwargs: {pipeline_kwargs}")
+            # Minimal logging for cost optimization
             
             # Ensure pipeline is not None
             if pipe is None:
@@ -483,29 +442,16 @@ async def transcribe_audio(
                     detail="Pipeline not initialized. Model may not be loaded correctly."
                 )
             
-            # Try passing audio array directly to pipeline (more reliable than file path)
-            # The pipeline should accept numpy arrays directly
-            logger.info("Calling pipeline with audio array directly...")
+            # Pass audio array directly to pipeline (cheapest - no file I/O)
             try:
-                result = pipe(
-                    audio_array,  # Pass array directly instead of file path
-                    generate_kwargs=generate_kwargs,
-                    **pipeline_kwargs
-                )
+                result = pipe(audio_array, generate_kwargs=generate_kwargs, **pipeline_kwargs)
             except (TypeError, ValueError) as array_error:
-                # If array doesn't work, fall back to file path
-                logger.warning(f"Pipeline rejected audio array, trying file path instead: {array_error}")
-                if not os.path.exists(preprocessed_path):
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Pipeline rejected audio array and preprocessed file not found. Error: {str(array_error)}"
-                    )
-                logger.info(f"Calling pipeline with preprocessed file: {preprocessed_path}")
-                result = pipe(
-                    preprocessed_path,
-                    generate_kwargs=generate_kwargs,
-                    **pipeline_kwargs
-                )
+                # Fallback: create file only if array fails (rare)
+                from scipy.io import wavfile
+                preprocessed_path = tmp_file_path.replace(file_ext, '_preprocessed.wav')
+                audio_int16 = (audio_array * 32767).astype(np.int16)
+                wavfile.write(preprocessed_path, 16000, audio_int16)
+                result = pipe(preprocessed_path, generate_kwargs=generate_kwargs, **pipeline_kwargs)
             
             logger.info(f"Pipeline result type: {type(result)}")
             logger.info(f"Pipeline result: {result}")
