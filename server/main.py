@@ -561,7 +561,7 @@ async def transcribe_audio(
             else:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Transcription failed: {error_msg}"
+                    detail=f"Pipeline error: {error_msg}"
                 )
         except Exception as e:
             error_msg = str(e)
@@ -575,7 +575,7 @@ async def transcribe_audio(
             else:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Transcription failed during inference ({error_type}): {error_msg}"
+                    detail=f"Inference error ({error_type}): {error_msg}"
                 )
         
         inference_time = time.time() - inference_start
@@ -631,7 +631,7 @@ async def transcribe_audio(
             error_detail = "Unknown error occurred during transcription"
         raise HTTPException(
             status_code=500,
-            detail=f"Transcription failed: {error_detail}"
+            detail=error_detail
         )
     finally:
         # Clean up temporary files
