@@ -27,3 +27,4 @@ assets/models/*.pt
 assets/models/*.bin
 server/models/*.pt
 server/models/*.bin
+server/models_cache/
