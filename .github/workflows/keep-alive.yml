@@ -1,15 +1,20 @@
-name: Keep-Alive Ping
+name: Keep-Alive Ping (DISABLED - Serverless Mode)
+
+# DISABLED: This workflow is disabled to allow true serverless scaling.
+# For serverless deployment, the service should scale to zero when idle.
+# Re-enable only if you need to prevent cold starts (but this increases costs).
 
 on:
-  schedule:
-    # Run every 45 minutes during active hours (6 AM - 11 PM UK time)
-    # UK time is GMT/BST (UTC+0/UTC+1)
-    # Active hours: 06:00-23:00 UK time
-    # Schedule in UTC: 05:00-22:00 UTC (GMT) or 04:00-21:00 UTC (BST)
-    # We'll schedule every 45 minutes from 05:00 to 22:00 UTC to cover both GMT and BST
-    # This ensures coverage during UK active hours regardless of daylight saving
-    - cron: '*/45 5-22 * * *'  # Every 45 minutes from 5 AM to 10 PM UTC
-  workflow_dispatch:  # Allow manual triggering
+  # DISABLED - Commented out to allow serverless scaling
+  # schedule:
+  #   # Run every 45 minutes during active hours (6 AM - 11 PM UK time)
+  #   # UK time is GMT/BST (UTC+0/UTC+1)
+  #   # Active hours: 06:00-23:00 UK time
+  #   # Schedule in UTC: 05:00-22:00 UTC (GMT) or 04:00-21:00 UTC (BST)
+  #   # We'll schedule every 45 minutes from 05:00 to 22:00 UTC to cover both GMT and BST
+  #   # This ensures coverage during UK active hours regardless of daylight saving
+  #   - cron: '*/45 5-22 * * *'  # Every 45 minutes from 5 AM to 10 PM UTC
+  workflow_dispatch:  # Allow manual triggering (for testing only)
 
 jobs:
   ping:
