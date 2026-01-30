@@ -107,8 +107,16 @@ def download_and_load_model():
         # Create and cache pipeline for faster inference
         from transformers import pipeline, GenerationConfig
         
-        # Create a completely fresh generation config
-        # Do NOT use from_model_config as it may contain outdated language settings
+        # Get the model's decoder start token ID (required for decoder initialization)
+        # This is essential - without it, the decoder can't initialize
+        decoder_start_token_id = model.config.decoder_start_token_id
+        if decoder_start_token_id is None:
+            # Fallback: get from tokenizer if not in config
+            decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+        logger.info(f"Decoder start token ID: {decoder_start_token_id}")
+        
+        # Create a generation config with required decoder start token
+        # We need to preserve decoder_start_token_id for proper decoder initialization
         generation_config = GenerationConfig()
         
         # Explicitly set only the parameters we need - do NOT include language
@@ -119,20 +127,13 @@ def download_and_load_model():
         generation_config.do_sample = False
         generation_config.temperature = None
         generation_config.use_cache = True
+        generation_config.decoder_start_token_id = decoder_start_token_id  # CRITICAL: Must be set
         
         # Update model's generation config to match
         if hasattr(model, 'generation_config'):
             model.generation_config = generation_config
 
-        # Prepare generate_kwargs explicitly, excluding language
-        # Convert to dict and filter out any None values or language-related keys
-        generate_kwargs_dict = generation_config.to_dict()
-        # Remove any language-related keys that might cause conflicts
-        generate_kwargs_dict.pop('language', None)
-        generate_kwargs_dict.pop('forced_decoder_ids', None)
-        generate_kwargs_dict.pop('decoder_start_token_id', None)  # This might be language-related
-        
-        # Ensure only the parameters we want are included
+        # Prepare generate_kwargs explicitly, excluding language but keeping decoder_start_token_id
         generate_kwargs_dict = {
             "max_new_tokens": 120,
             "num_beams": 1,
@@ -140,6 +141,7 @@ def download_and_load_model():
             "temperature": None,
             "use_cache": True,
             "return_timestamps": False,
+            "decoder_start_token_id": decoder_start_token_id,  # CRITICAL: Must be included
         }
 
         global pipe
@@ -472,7 +474,12 @@ async def transcribe_audio(
             logger.warning("Pipeline not cached, creating new one...")
             from transformers import pipeline, GenerationConfig
             
-            # Create a completely fresh generation config (not from model config)
+            # Get decoder start token ID (required for decoder initialization)
+            decoder_start_token_id = model.config.decoder_start_token_id
+            if decoder_start_token_id is None:
+                decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+            
+            # Create generation config with decoder start token
             generation_config = GenerationConfig()
             generation_config.return_timestamps = False
             generation_config.max_new_tokens = 120
@@ -480,8 +487,9 @@ async def transcribe_audio(
             generation_config.do_sample = False
             generation_config.temperature = None
             generation_config.use_cache = True
+            generation_config.decoder_start_token_id = decoder_start_token_id  # CRITICAL
             
-            # Prepare explicit generate_kwargs without language
+            # Prepare explicit generate_kwargs with decoder_start_token_id
             generate_kwargs_dict = {
                 "max_new_tokens": 120,
                 "num_beams": 1,
@@ -489,6 +497,7 @@ async def transcribe_audio(
                 "temperature": None,
                 "use_cache": True,
                 "return_timestamps": False,
+                "decoder_start_token_id": decoder_start_token_id,  # CRITICAL
             }
 
             pipe = pipeline(
@@ -509,9 +518,15 @@ async def transcribe_audio(
         # Fast decoding settings for optimal speed
         inference_start = time.time()
         
+        # Get decoder start token ID (required for decoder initialization)
+        decoder_start_token_id = model.config.decoder_start_token_id
+        if decoder_start_token_id is None:
+            decoder_start_token_id = processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+        
         # Fast decoding generation kwargs
         # IMPORTANT: Do NOT include 'language' parameter - it causes generation config conflicts
         # The model is fine-tuned for Arabic, so language specification is not needed
+        # CRITICAL: Must include decoder_start_token_id for proper decoder initialization
         generate_kwargs = {
             "max_new_tokens": 120,
             "num_beams": 1,
@@ -519,6 +534,7 @@ async def transcribe_audio(
             "temperature": None,
             "use_cache": True,
             "return_timestamps": False,
+            "decoder_start_token_id": decoder_start_token_id,  # CRITICAL: Required for decoder init
         }
         
         # Pipeline parameters - explicitly do NOT pass language
@@ -527,11 +543,12 @@ async def transcribe_audio(
             "return_timestamps": False,
         }
         
-        # Ensure model's generation config is fresh and doesn't have language conflicts
+        # Ensure model's generation config has decoder_start_token_id
         if hasattr(model, 'generation_config'):
             from transformers import GenerationConfig
-            # Create a completely fresh config (not from model config to avoid outdated settings)
-            model.generation_config = GenerationConfig()
+            # Update generation config with decoder start token
+            if not hasattr(model.generation_config, 'decoder_start_token_id') or model.generation_config.decoder_start_token_id is None:
+                model.generation_config.decoder_start_token_id = decoder_start_token_id
             model.generation_config.return_timestamps = False
             model.generation_config.max_new_tokens = 120
             model.generation_config.num_beams = 1
