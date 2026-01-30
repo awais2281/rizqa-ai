@@ -539,24 +539,37 @@ async def transcribe_audio(
             model.generation_config.temperature = None
             model.generation_config.use_cache = True
         
-        # Use preprocessed audio file
+        # Use preprocessed audio array directly (more reliable than file path)
         # Do NOT pass language parameter - the model is fine-tuned for Arabic
         try:
-            # Verify preprocessed file still exists and is valid before inference
+            # Ensure audio array is in correct format for pipeline (float32, normalized)
+            if audio_array.dtype != np.float32:
+                logger.info(f"Converting audio array from {audio_array.dtype} to float32")
+                audio_array = audio_array.astype(np.float32)
+            
+            # Ensure audio is properly normalized to [-1, 1] range
+            audio_max = np.abs(audio_array).max()
+            if audio_max > 1.0:
+                logger.warning(f"Audio exceeds [-1, 1] range (max={audio_max:.6f}), re-normalizing")
+                audio_array = audio_array / audio_max * 0.95
+            
+            # Log detailed audio array information before inference
+            logger.info(f"Audio array ready for inference:")
+            logger.info(f"  - Shape: {audio_array.shape}")
+            logger.info(f"  - Dtype: {audio_array.dtype}")
+            logger.info(f"  - Min: {audio_array.min():.6f}, Max: {audio_array.max():.6f}")
+            logger.info(f"  - Mean: {audio_array.mean():.6f}, Std: {audio_array.std():.6f}")
+            logger.info(f"  - RMS: {np.sqrt(np.mean(audio_array**2)):.6f}")
+            logger.info(f"  - Non-zero samples: {np.count_nonzero(audio_array)} / {len(audio_array)}")
+            logger.info(f"  - Duration: {len(audio_array) / 16000:.2f} seconds")
+            
+            # Verify preprocessed file still exists and is valid (for backup/debugging)
             if not os.path.exists(preprocessed_path):
-                raise HTTPException(
-                    status_code=500,
-                    detail="Preprocessed audio file not found before inference."
-                )
+                logger.warning(f"Preprocessed file not found: {preprocessed_path}, but audio array is valid")
+            else:
+                file_size = os.path.getsize(preprocessed_path)
+                logger.info(f"Preprocessed file exists: {preprocessed_path} ({file_size} bytes)")
             
-            file_size = os.path.getsize(preprocessed_path)
-            if file_size == 0:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Preprocessed audio file is empty before inference."
-                )
-            
-            logger.info(f"Calling pipeline with preprocessed file: {preprocessed_path} ({file_size} bytes)")
             logger.info(f"Pipeline type: {type(pipe)}")
             logger.info(f"Generate kwargs: {generate_kwargs}")
             logger.info(f"Pipeline kwargs: {pipeline_kwargs}")
@@ -568,11 +581,29 @@ async def transcribe_audio(
                     detail="Pipeline not initialized. Model may not be loaded correctly."
                 )
             
-            result = pipe(
-                preprocessed_path,
-                generate_kwargs=generate_kwargs,
-                **pipeline_kwargs
-            )
+            # Try passing audio array directly to pipeline (more reliable than file path)
+            # The pipeline should accept numpy arrays directly
+            logger.info("Calling pipeline with audio array directly...")
+            try:
+                result = pipe(
+                    audio_array,  # Pass array directly instead of file path
+                    generate_kwargs=generate_kwargs,
+                    **pipeline_kwargs
+                )
+            except (TypeError, ValueError) as array_error:
+                # If array doesn't work, fall back to file path
+                logger.warning(f"Pipeline rejected audio array, trying file path instead: {array_error}")
+                if not os.path.exists(preprocessed_path):
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Pipeline rejected audio array and preprocessed file not found. Error: {str(array_error)}"
+                    )
+                logger.info(f"Calling pipeline with preprocessed file: {preprocessed_path}")
+                result = pipe(
+                    preprocessed_path,
+                    generate_kwargs=generate_kwargs,
+                    **pipeline_kwargs
+                )
             
             logger.info(f"Pipeline result type: {type(result)}")
             logger.info(f"Pipeline result: {result}")
@@ -601,46 +632,77 @@ async def transcribe_audio(
             raise
         except ValueError as e:
             error_msg = str(e)
-            logger.error(f"ValueError in pipeline: {e}", exc_info=True)
-            logger.error(f"Preprocessed file info: path={preprocessed_path}, exists={os.path.exists(preprocessed_path) if preprocessed_path else False}, size={os.path.getsize(preprocessed_path) if preprocessed_path and os.path.exists(preprocessed_path) else 0}")
-            if "torch.cat" in error_msg or "non-empty list" in error_msg or "empty" in error_msg.lower():
-                # Try to read the preprocessed file to verify it's valid
+            error_type = type(e).__name__
+            logger.error(f"ValueError in pipeline ({error_type}): {e}", exc_info=True)
+            
+            # Log audio array state for debugging
+            logger.error(f"Audio array state at error: shape={audio_array.shape if 'audio_array' in locals() else 'N/A'}, "
+                        f"dtype={audio_array.dtype if 'audio_array' in locals() else 'N/A'}, "
+                        f"len={len(audio_array) if 'audio_array' in locals() else 'N/A'}")
+            
+            # Log preprocessed file info
+            if preprocessed_path and os.path.exists(preprocessed_path):
+                file_size = os.path.getsize(preprocessed_path)
+                logger.error(f"Preprocessed file: {preprocessed_path}, size={file_size} bytes")
                 try:
                     test_audio, test_sr = librosa.load(preprocessed_path, sr=None, mono=True)
-                    logger.error(f"Preprocessed file validation: {len(test_audio)} samples at {test_sr}Hz, max={np.abs(test_audio).max() if len(test_audio) > 0 else 0}")
+                    logger.error(f"Preprocessed file validation: {len(test_audio)} samples at {test_sr}Hz, "
+                               f"max={np.abs(test_audio).max() if len(test_audio) > 0 else 0}")
                 except Exception as read_err:
-                    logger.error(f"Failed to read preprocessed file for validation: {read_err}")
-                
+                    logger.error(f"Failed to read preprocessed file: {read_err}")
+            
+            # Provide more specific error messages
+            if "torch.cat" in error_msg or "non-empty list" in error_msg:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Audio processing failed: The audio file may be empty or corrupted. Please ensure the audio contains valid speech. Error: {error_msg[:200]}"
+                    detail=f"Audio processing error: The model received invalid audio data. This may indicate the audio file is corrupted or in an unsupported format. Please try recording again with clear speech. Technical error: {error_msg[:150]}"
+                )
+            elif "empty" in error_msg.lower():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio processing error: The audio appears to be empty or contains no speech. Please ensure you recorded actual speech with sufficient volume. Technical error: {error_msg[:150]}"
                 )
             else:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Pipeline error: {error_msg}"
+                    detail=f"Pipeline processing error: {error_msg[:200]}"
                 )
         except Exception as e:
             error_msg = str(e)
             error_type = type(e).__name__
             logger.error(f"Pipeline inference error ({error_type}): {e}", exc_info=True)
-            logger.error(f"Preprocessed file info: path={preprocessed_path}, exists={os.path.exists(preprocessed_path) if preprocessed_path else False}, size={os.path.getsize(preprocessed_path) if preprocessed_path and os.path.exists(preprocessed_path) else 0}")
-            if "torch.cat" in error_msg or "non-empty list" in error_msg or "empty" in error_msg.lower():
-                # Try to read the preprocessed file to verify it's valid
+            
+            # Log audio array state for debugging
+            logger.error(f"Audio array state at error: shape={audio_array.shape if 'audio_array' in locals() else 'N/A'}, "
+                        f"dtype={audio_array.dtype if 'audio_array' in locals() else 'N/A'}, "
+                        f"len={len(audio_array) if 'audio_array' in locals() else 'N/A'}")
+            
+            # Log preprocessed file info
+            if preprocessed_path and os.path.exists(preprocessed_path):
+                file_size = os.path.getsize(preprocessed_path)
+                logger.error(f"Preprocessed file: {preprocessed_path}, size={file_size} bytes")
                 try:
                     test_audio, test_sr = librosa.load(preprocessed_path, sr=None, mono=True)
-                    logger.error(f"Preprocessed file validation: {len(test_audio)} samples at {test_sr}Hz, max={np.abs(test_audio).max() if len(test_audio) > 0 else 0}")
+                    logger.error(f"Preprocessed file validation: {len(test_audio)} samples at {test_sr}Hz, "
+                               f"max={np.abs(test_audio).max() if len(test_audio) > 0 else 0}")
                 except Exception as read_err:
-                    logger.error(f"Failed to read preprocessed file for validation: {read_err}")
-                
+                    logger.error(f"Failed to read preprocessed file: {read_err}")
+            
+            # Provide more specific error messages
+            if "torch.cat" in error_msg or "non-empty list" in error_msg:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Audio processing failed: The audio file may be empty or corrupted. Please ensure the audio contains valid speech. Error: {error_msg[:200]}"
+                    detail=f"Audio processing error: The model received invalid audio data. This may indicate the audio file is corrupted or in an unsupported format. Please try recording again with clear speech. Technical error: {error_msg[:150]}"
+                )
+            elif "empty" in error_msg.lower():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio processing error: The audio appears to be empty or contains no speech. Please ensure you recorded actual speech with sufficient volume. Technical error: {error_msg[:150]}"
                 )
             else:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Inference error ({error_type}): {error_msg}"
+                    detail=f"Inference error ({error_type}): {error_msg[:200]}"
                 )
         
         inference_time = time.time() - inference_start
