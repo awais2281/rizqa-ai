@@ -4,11 +4,13 @@ uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 
 # Hugging Face Transformers for Whisper
-transformers>=4.35.0
+# Note: Version 4.40.0 is compatible with PyTorch 2.1.0 on Windows
+transformers==4.40.0
 
-# PyTorch (CPU-only for smaller image size)
-torch>=2.1.0
-torchaudio>=2.1.0
+# PyTorch (CPU-only for Windows compatibility)
+# Note: Version 2.1.0 works reliably on Windows without DLL issues
+torch==2.1.0
+torchaudio==2.1.0
 
 # Audio processing
 librosa>=0.10.0

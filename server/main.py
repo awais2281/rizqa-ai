@@ -105,21 +105,54 @@ def download_and_load_model():
         model.eval()
         
         # Create and cache pipeline for faster inference
-        from transformers import pipeline
+        from transformers import pipeline, GenerationConfig
         
-        # Ensure generation config doesn't request timestamps
+        # Create a completely fresh generation config
+        # Do NOT use from_model_config as it may contain outdated language settings
+        generation_config = GenerationConfig()
+        
+        # Explicitly set only the parameters we need - do NOT include language
+        # The model is fine-tuned for Arabic, so language is not needed
+        generation_config.return_timestamps = False
+        generation_config.max_new_tokens = 120
+        generation_config.num_beams = 1
+        generation_config.do_sample = False
+        generation_config.temperature = None
+        generation_config.use_cache = True
+        
+        # Update model's generation config to match
         if hasattr(model, 'generation_config'):
-            model.generation_config.return_timestamps = False
+            model.generation_config = generation_config
+
+        # Prepare generate_kwargs explicitly, excluding language
+        # Convert to dict and filter out any None values or language-related keys
+        generate_kwargs_dict = generation_config.to_dict()
+        # Remove any language-related keys that might cause conflicts
+        generate_kwargs_dict.pop('language', None)
+        generate_kwargs_dict.pop('forced_decoder_ids', None)
+        generate_kwargs_dict.pop('decoder_start_token_id', None)  # This might be language-related
         
+        # Ensure only the parameters we want are included
+        generate_kwargs_dict = {
+            "max_new_tokens": 120,
+            "num_beams": 1,
+            "do_sample": False,
+            "temperature": None,
+            "use_cache": True,
+            "return_timestamps": False,
+        }
+
         global pipe
+        # Create pipeline WITHOUT any language parameter
+        # The model is fine-tuned for Arabic, so it will automatically transcribe in Arabic
         pipe = pipeline(
             "automatic-speech-recognition",
             model=model,
             tokenizer=processor.tokenizer,
             feature_extractor=processor.feature_extractor,
             device=0 if device == "cuda" else -1,
-            return_timestamps=False,
-            chunk_length_s=30,  # Process in chunks to avoid timestamp issues
+            generate_kwargs=generate_kwargs_dict,
+            chunk_length_s=30,
         )
         logger.info("✓ Pipeline created and cached")
         
@@ -295,18 +328,35 @@ async def transcribe_audio(
         global pipe
         if pipe is None:
             logger.warning("Pipeline not cached, creating new one...")
-            from transformers import pipeline
-            # Ensure generation config doesn't request timestamps
-            if hasattr(model, 'generation_config'):
-                model.generation_config.return_timestamps = False
+            from transformers import pipeline, GenerationConfig
+            
+            # Create a completely fresh generation config (not from model config)
+            generation_config = GenerationConfig()
+            generation_config.return_timestamps = False
+            generation_config.max_new_tokens = 120
+            generation_config.num_beams = 1
+            generation_config.do_sample = False
+            generation_config.temperature = None
+            generation_config.use_cache = True
+            
+            # Prepare explicit generate_kwargs without language
+            generate_kwargs_dict = {
+                "max_new_tokens": 120,
+                "num_beams": 1,
+                "do_sample": False,
+                "temperature": None,
+                "use_cache": True,
+                "return_timestamps": False,
+            }
+
             pipe = pipeline(
                 "automatic-speech-recognition",
                 model=model,
                 tokenizer=processor.tokenizer,
                 feature_extractor=processor.feature_extractor,
                 device=0 if device == "cuda" else -1,
-                return_timestamps=False,
-                chunk_length_s=30,  # Process in chunks to avoid timestamp issues
+                generate_kwargs=generate_kwargs_dict,  # Use explicit dict
+                chunk_length_s=30,
             )
         
         # Transcribe - for fine-tuned Arabic model, we don't need to force language
@@ -318,31 +368,39 @@ async def transcribe_audio(
         inference_start = time.time()
         
         # Fast decoding generation kwargs
-        # beam_size=1 (num_beams=1) for greedy decoding (fastest)
-        # best_of=1 is implicit with num_beams=1 (only one beam)
-        # vad_filter=True is handled by our preprocessing (silence trimming above)
-        # condition_on_previous_text=False for faster decoding
+        # IMPORTANT: Do NOT include 'language' parameter - it causes generation config conflicts
+        # The model is fine-tuned for Arabic, so language specification is not needed
         generate_kwargs = {
-            "max_new_tokens": 120,  # Reduced for faster generation
-            "num_beams": 1,  # beam_size=1 for fastest decoding (greedy, equivalent to best_of=1)
-            "do_sample": False,  # Deterministic (no sampling)
-            "temperature": None,  # Disable temperature for faster generation
-            "use_cache": True,  # Enable KV cache for faster generation
-            "return_timestamps": False,  # Explicitly disable timestamps
+            "max_new_tokens": 120,
+            "num_beams": 1,
+            "do_sample": False,
+            "temperature": None,
+            "use_cache": True,
+            "return_timestamps": False,
         }
         
-        # Pipeline parameters for fast decoding
-        # vad_filter is handled by our preprocessing (silence trimming above)
-        # condition_on_previous_text can be passed to pipeline
+        # Pipeline parameters - explicitly do NOT pass language
         pipeline_kwargs = {
-            "language": "ar",  # Explicitly set Arabic language
-            "return_timestamps": False,  # No timestamps for speed
-            "condition_on_previous_text": False,  # Don't condition on previous text (faster)
+            "return_timestamps": False,
+            "condition_on_previous_text": False,
         }
+        
+        # Ensure model's generation config is fresh and doesn't have language conflicts
+        if hasattr(model, 'generation_config'):
+            from transformers import GenerationConfig
+            # Create a completely fresh config (not from model config to avoid outdated settings)
+            model.generation_config = GenerationConfig()
+            model.generation_config.return_timestamps = False
+            model.generation_config.max_new_tokens = 120
+            model.generation_config.num_beams = 1
+            model.generation_config.do_sample = False
+            model.generation_config.temperature = None
+            model.generation_config.use_cache = True
         
         # Use preprocessed audio file
+        # Do NOT pass language parameter - the model is fine-tuned for Arabic
         result = pipe(
-            preprocessed_path,  # Use preprocessed audio
+            preprocessed_path,
             generate_kwargs=generate_kwargs,
             **pipeline_kwargs
         )
