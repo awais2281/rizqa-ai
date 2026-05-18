@@ -39,6 +39,12 @@ web-build/
 .git/
 .gitignore
 
+# Native projects — EAS runs prebuild fresh on the build server
+android/
+ios/
+website/
+.github/
+
 # Documentation (not needed for build)
 *.md
 !README.md
